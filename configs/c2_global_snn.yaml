@@ -1,0 +1,15 @@
+# Component 2 — Global SNN Model (owner: Wickramaarachchi W.A.R.J)
+
+backbone:
+  neuron: lif
+  out_features: 256               # fixed by the interface contract
+  reservoir_size: null            # to be decided
+  intrinsic_plasticity: true
+  stdp: true
+
+training:
+  method: surrogate_gradient
+  surrogate: atan
+  max_epochs: null
+  lr: null
+  datasets: [modma]               # later: mumtaz, tdbrain
