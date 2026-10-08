@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data, checkpoints, patient profiles — this repo is public
+data/*
+!data/README.md
+outputs/*
+!outputs/.gitkeep
+*.pt
+*.pth
+*.h5
+*.npy
+.env

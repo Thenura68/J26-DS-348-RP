@@ -1,0 +1,31 @@
+# Shared settings for all components. Change only via a "shared:" pull request.
+
+project:
+  id: J26-DS-348
+  seed: 42
+
+data:
+  dataset: modma
+  montage: eeg_128ch_resting      # or eeg_3ch_resting (wearable frontal subset) — open decision
+  sampling_rate_hz: 250           # verify against the MODMA files
+  bandpass_hz: [0.5, 45.0]
+  filter_order: 4
+  window_sec: 2.0                 # open decision: 2 s vs 10 s windows
+  window_overlap: 0.0
+
+contract:                         # mirrors src/snn_depression/common/contracts.py
+  feature_dim: 256
+  n_classes: 3
+  class_names: [mild, moderate, severe]
+
+labels:
+  scheme: phq9
+  phq9_bins:                      # inclusive ranges
+    mild: [5, 9]
+    moderate: [10, 14]
+    severe: [15, 27]
+  below_mild: exclude             # open decision: exclude | minimal_class
+
+split:
+  strategy: leave_one_subject_out
+  calibration_fraction: 0.2       # first 20% of each test subject's recording (chronological)

@@ -1,0 +1,36 @@
+# Component 3 — Personalized SNN Adapter + Fallback Backbone (owner: Jayarathna P.D.T.M)
+
+backbone_source: primary          # primary (C2 global SNN) | fallback (C3 STDP+SNN)
+
+adapter:
+  in_features: 256                # fixed by the interface contract
+  hidden_features: 64             # feature compression 256 -> 64
+  n_classes: 3
+  neuron: lif
+  beta_init: 0.9                  # membrane decay (learnable)
+  threshold_init: 1.0             # V_th (learnable)
+  learn_beta: true
+  learn_threshold: true
+  surrogate: atan
+  # Note: 256*64+64 + 64*3+3 = 16,643 params ≈ 65 KB in float32.
+  # Meeting the ~48 KB profile target needs float16 export (≈ 33 KB) or a smaller hidden size.
+
+calibration:
+  calibration_fraction: 0.2       # first 20% of the subject's recording
+  max_seconds: 120
+  max_epochs: 50
+  lr: 1.0e-3
+  max_trainable_ratio: 0.05       # adapter params / total params
+
+fallback_backbone:
+  out_features: 256
+  stdp:
+    tau_pre_ms: 20.0
+    tau_post_ms: 20.0
+    a_plus: 0.01
+    a_minus: 0.012
+
+export:
+  dtype: float16
+  encrypt: true                   # AES-256-GCM via the `cryptography` package
+  target_size_kb: 48

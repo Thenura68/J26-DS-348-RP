@@ -1,0 +1,12 @@
+# Component 1 — EEG-to-Spike Encoding (owner: Rathnayake M.N.M)
+
+encoder:
+  method: adaptive_delta          # baselines: rate | latency | fixed_delta
+  baseline_sec: 120               # per-patient baseline used to derive thresholds
+  threshold_stat: mad             # std | mad
+  threshold_k: 1.0
+  signed_spikes: true             # split into ON/OFF channels per the interface contract
+
+fidelity:
+  metrics: [correlation, rmse, snr]
+  min_correlation: null           # pass/fail threshold — to be decided
