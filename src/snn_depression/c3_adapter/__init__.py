@@ -5,3 +5,7 @@ Core:     PersonalSNNAdapter   features [B, T', 256] → severity spike counts [
 Fallback: STDPFallbackBackbone spikes [B, T, C_spk] → features [B, T', 256]
           (same FeatureBackbone contract as C2, so the adapter runs without C2)
 """
+
+from .adapter import PersonalSNNAdapter
+
+__all__ = ["PersonalSNNAdapter"]
