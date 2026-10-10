@@ -17,6 +17,7 @@ openpyxl>=3.1          # MODMA subject information sheet
 
 # Visualisation and tracking
 matplotlib>=3.8
+tqdm>=4.66
 tensorboard>=2.15
 
 # Edge profiling and profile encryption (C3)
