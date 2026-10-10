@@ -10,3 +10,36 @@ encoder:
 fidelity:
   metrics: [correlation, rmse, snr]
   min_correlation: null           # pass/fail threshold — to be decided
+
+preprocessing:
+  montage: GSN-HydroCel-128
+  acquisition_reference_row: 129 # Cz/E129 row; excluded from the scalp-channel array
+  channels_to_drop: []
+  reference_method: average       # CAR is applied to the 128 scalp channels after interpolation
+  reference_channel: null
+  detrend: linear
+  filter_padding_sec: 2.0
+  notch:
+    enabled: true
+    frequency_hz: 50.0
+    quality_factor: 30.0
+  artifact:
+    flat_std_threshold: 1.0e-12
+    max_std_ratio: 10.0
+    variance_mad_multiplier: 10.0
+    drop_bad_channels: false
+    peak_to_peak_threshold: null
+    peak_to_peak_mad_multiplier: 10.0
+    ica:
+      enabled: false
+      eog_channels: []
+      threshold: 3.0
+  amplitude_scaling:
+    method: zscore                # calibration-only; use microvolts only with verified conversion metadata
+    epsilon: 1.0e-8
+  normalization:
+    enabled: true
+    method: zscore
+    calibration_fraction: 0.2
+  channel_selection:
+    keep_names: null
