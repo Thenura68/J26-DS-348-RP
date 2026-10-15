@@ -14,9 +14,13 @@ with W_l the weights from layer l to l+1 and P the class probabilities at t_end.
 quantities (spikes, weights, output confidence) are used — no gradients.
 
 Adaptations for this project:
-- ``decay="leak_matched"``: each layer's spikes fade with the leak β of the neurons that receive
-  them, instead of one β for the whole network (``decay="paper"``). Which is more faithful is
-  an experimental question (configs/c4_xai.yaml → tsa).
+- ``decay="leak_matched"``: fading is applied once, with the leak β of the output neurons, which
+  hold the evidence until the prediction; earlier layers get β = 1. TSA links an input spike only
+  to hidden spikes at the same step, so in the paper's version (one β for every layer,
+  ``decay="paper"``) the fading is applied once per layer even though no time passes between
+  layers. With the practice readout (β = 1) that version credits only the last ~0.25 s of a 2 s
+  window although the readout weighs the whole window equally. Which version is more faithful
+  is tested experimentally (configs/c4_xai.yaml → tsa).
 - ON/OFF spike channels are summed back to one score per electrode (contract boundary 5).
 """
 
@@ -106,10 +110,10 @@ class TemporalSpikeAttribution:
         features = self.backbone(spikes)
         out = self.adapter(features)
         self.probs = out["probs"]
-        if self.decay == "paper":
+        if self.decay == "paper":     # one β (the network's neuron leak) for every layer
             betas = [self.backbone.beta, self.backbone.beta]
-        else:   # input spikes are received by the backbone, hidden spikes by the adapter
-            betas = [self.backbone.beta, self.adapter.beta]
+        else:                         # fade once, at the output neurons' leak
+            betas = [1.0, self.adapter.beta]
         attr = tsa_attribution([spikes, self.backbone.last["spikes"]],
                                [self.backbone.weight, self.adapter.weight],
                                betas, self.probs, self.variant)
