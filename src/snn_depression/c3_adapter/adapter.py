@@ -35,13 +35,37 @@ from ..common.contracts import (
 _SURROGATES = {"atan": surrogate.atan}
 
 
+def decide(spike_counts: Tensor, mem_max: Tensor) -> tuple[Tensor, Tensor]:
+    """Turn output spike counts into a class, with a defined rule for ties and silent windows.
+
+    spike_counts [B, 3], mem_max [B, 3] (max output membrane over time)
+    → (pred [B] int64 class index, silent [B] bool).
+
+    Rule: the class with the most output spikes wins. If several classes share the top count —
+    including the silent case where every count is 0 — the tie goes to the one whose membrane came
+    closest to firing (highest max membrane). Plain argmax would always pick index 0 ("mild") for a
+    silent window, a systematic bias. Because the membrane is only consulted among the top-count
+    classes, pred == argmax(spike_counts) whenever the maximum is unique, so this refines the
+    contract's argmax rule without contradicting it. Any remaining exact tie goes to the lowest
+    index (torch.argmax returns the first maximum), so the rule is deterministic.
+
+    ``silent`` flags windows with no output spikes at all: their class rests on sub-threshold
+    evidence only, so the UI can show low confidence and C4 knows ``spike_record`` is empty.
+    """
+    is_top = spike_counts == spike_counts.amax(dim=1, keepdim=True)
+    pred = mem_max.masked_fill(~is_top, float("-inf")).argmax(dim=1)
+    silent = spike_counts.sum(dim=1) == 0
+    return pred, silent
+
+
 class PersonalSNNAdapter(nn.Module):
     """Trainable SNN classification head mounted on a frozen ``FeatureBackbone``.
 
     Input  ``features``     [B, T', 256] float32: spikes, rates or membrane values, any T' ≥ 1.
     Output ``spike_counts`` [B, 3]  output spikes per class, summed over T'.
            ``spike_record`` [B, T', 3] output spikes per time step (used by C4 for attribution).
-    Prediction = argmax(spike_counts) → index into ``CLASS_NAMES``.
+    Prediction: ``predict(features)`` → (class index into ``CLASS_NAMES``, silent flag);
+    see ``decide``.
     """
 
     def __init__(
@@ -54,6 +78,7 @@ class PersonalSNNAdapter(nn.Module):
         learn_beta: bool = True,
         learn_threshold: bool = True,
         surrogate_name: str = "atan",
+        threshold_min: float = 0.1,
     ):
         super().__init__()
         # The interface contract fixes both ends of the adapter. Failing here is clearer than
@@ -68,10 +93,18 @@ class PersonalSNNAdapter(nn.Module):
             raise ValueError(
                 f"unknown surrogate {surrogate_name!r}; supported: {sorted(_SURROGATES)}"
             )
+        if not 0.0 < threshold_min <= threshold_init:
+            raise ValueError(
+                f"threshold_min must be in (0, threshold_init={threshold_init}], "
+                f"got {threshold_min}"
+            )
 
         self.in_features = in_features
         self.hidden_features = hidden_features
         self.n_classes = n_classes
+        # A hyper-parameter, not a learned value: kept as a plain attribute so it is not part of
+        # the saved patient profile (it comes from the config).
+        self.threshold_min = threshold_min
 
         spike_grad = _SURROGATES[surrogate_name]()
 
@@ -79,9 +112,7 @@ class PersonalSNNAdapter(nn.Module):
         # β and V_th are passed as vectors, so snnTorch learns one value per neuron instead of one
         # per layer. This gives Milestone 4's label-free calibration a separate knob per neuron
         # for pulling each firing rate back to its population target. Cost: 2 × (64 + 3) = 134
-        # extra parameters. snnTorch clamps β to [0, 1] in its forward pass but does not clamp
-        # V_th. If training pushes V_th ≤ 0, that neuron fires on every step (to handle in
-        # Milestone 2).
+        # extra parameters. Their valid ranges are enforced by constrain_parameters().
         self.lif1 = snn.Leaky(
             beta=torch.full((hidden_features,), beta_init),
             threshold=torch.full((hidden_features,), threshold_init),
@@ -115,10 +146,45 @@ class PersonalSNNAdapter(nn.Module):
             learn_beta=cfg["learn_beta"],
             learn_threshold=cfg["learn_threshold"],
             surrogate_name=cfg["surrogate"],
+            threshold_min=cfg.get("threshold_min", 0.1),
         )
+
+    @torch.no_grad()
+    def constrain_parameters(self) -> None:
+        """Clamp stored β to [0, 1] and V_th to ≥ threshold_min. Call after EVERY parameter update.
+
+        Why clamp the stored values instead of reparameterising (e.g. V_th = softplus(ρ)):
+        - V_th ≤ 0 makes a neuron fire on every step, carrying no information. The floor stops that.
+        - snnTorch clamps β to [0, 1] only inside its forward pass. A stored β of 1.3 would act as
+          1.0 and get zero gradient, so it could never return. Clamping keeps stored == used.
+        - The saved patient profile then holds the real β and V_th, readable without conversion,
+          and Milestone 4's label-free calibration can adjust V_th directly with homeostatic rules.
+        Training calls this after each optimiser step; calibration will call the same method.
+        """
+        for lif in (self.lif1, self.lif2):
+            lif.beta.clamp_(0.0, 1.0)
+            lif.threshold.clamp_(min=self.threshold_min)
 
     def forward(self, features: Tensor) -> tuple[Tensor, Tensor]:
         """features [B, T', 256] → (spike_counts [B, 3], spike_record [B, T', 3])."""
+        spike_record, _ = self._simulate(features)
+        # Rate decoding: the class whose output neuron fires most over the window wins.
+        spike_counts = spike_record.sum(dim=1)
+        check_adapter_output(spike_counts, spike_record)
+        return spike_counts, spike_record
+
+    @torch.no_grad()
+    def predict(self, features: Tensor) -> tuple[Tensor, Tensor]:
+        """features [B, T', 256] → (pred [B] int64 class index, silent [B] bool). See ``decide``."""
+        spike_record, mem_record = self._simulate(features)
+        return decide(spike_record.sum(dim=1), mem_record.amax(dim=1))
+
+    def _simulate(self, features: Tensor) -> tuple[Tensor, Tensor]:
+        """Run the LIF layers over time.
+
+        features [B, T', 256] → (spike_record [B, T', 3], mem_record [B, T', 3] output membrane).
+        One loop shared by forward() and predict(), so both always see identical dynamics.
+        """
         check_features(features)
         batch, n_steps, _ = features.shape
         if n_steps == 0:
@@ -134,16 +200,12 @@ class PersonalSNNAdapter(nn.Module):
         mem1 = features.new_zeros(batch, self.hidden_features)
         mem2 = features.new_zeros(batch, self.n_classes)
 
-        out_spikes = []
+        out_spikes, out_mems = [], []
         for t in range(n_steps):
             spk1, mem1 = self.lif1(cur1[t], mem1)
             spk2, mem2 = self.lif2(self.fc2(spk1), mem2)
             out_spikes.append(spk2)
+            out_mems.append(mem2)
 
         # Stacking on dim=1 turns the time-first loop back into the batch-first [B, T', 3] boundary.
-        spike_record = torch.stack(out_spikes, dim=1)
-        # Rate decoding: the class whose output neuron fires most over the window wins.
-        spike_counts = spike_record.sum(dim=1)
-
-        check_adapter_output(spike_counts, spike_record)
-        return spike_counts, spike_record
+        return torch.stack(out_spikes, dim=1), torch.stack(out_mems, dim=1)

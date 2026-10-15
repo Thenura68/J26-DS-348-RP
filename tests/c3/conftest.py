@@ -5,6 +5,7 @@ import torch
 from torch import nn
 
 from snn_depression.c3_adapter import PersonalSNNAdapter
+from snn_depression.common.config import load_config
 from snn_depression.common.contracts import FEATURE_DIM, FeatureBackbone
 from snn_depression.common.seed import set_seed
 
@@ -47,3 +48,17 @@ def random_spikes():
         return (torch.rand(batch, n_steps, n_channels) < rate).float()
 
     return _make
+
+
+@pytest.fixture(scope="session")
+def toy_config() -> dict:
+    """The real c3 config, with the synthetic data shrunk so one training run takes ~2 s.
+
+    Shorter windows (60 steps instead of 100) carry less evidence per window, so the class effect
+    is raised from 0.08 to 0.10 to stay learnable in 12 epochs. Shared across tests: copy it
+    (copy.deepcopy) before changing anything.
+    """
+    cfg = load_config("c3_adapter")
+    cfg["synthetic"].update(windows_per_subject=10, n_steps=60, effect=0.10)
+    cfg["training"].update(epochs=12)
+    return cfg

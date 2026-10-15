@@ -12,8 +12,36 @@ adapter:
   learn_beta: true
   learn_threshold: true
   surrogate: atan
-  # Note: 256*64+64 + 64*3+3 = 16,643 params ≈ 65 KB in float32.
+  threshold_min: 0.1              # V_th floor, applied after every parameter update (M2 decision b)
+  # Note: 256*64+64 + 64*3+3 = 16,643 weights + 134 per-neuron β/V_th = 16,777 params ≈ 65 KB fp32.
   # Meeting the ~48 KB profile target needs float16 export (≈ 33 KB) or a smaller hidden size.
+
+training:                         # Milestone 2: supervised adapter training on a frozen backbone
+  epochs: 25
+  lr: 1.0e-2
+  batch_size: 32
+  seed: 42
+  loss: mse_count                 # snnTorch mse_count_loss (M2 decision a)
+  correct_rate: 0.8               # target firing rate of the true class's output neuron
+  incorrect_rate: 0.2             # target firing rate of each other output neuron
+
+synthetic:                        # Milestone 2 toy data (no real EEG; see c3_adapter/synthetic.py)
+  n_subjects_per_class: 8
+  windows_per_subject: 20
+  test_subjects_per_class: 2      # held-out subjects per class (split by subject, never by window)
+  n_steps: 100
+  n_channels: 24
+  base_rate: 0.10                 # baseline spike probability per step
+  effect: 0.08                    # extra rate in the class's channel group and time segment
+  subject_jitter: 0.3             # log-normal spread of per-subject channel gain and signal size
+  window_noise: 0.02              # per-window rate noise per channel
+  seed: 0
+
+toy_backbone:                     # fixed random LIF reservoir standing in for C2 / fallback
+  gain: 2.0
+  bias: -0.1
+  beta: 0.9
+  threshold: 1.0
 
 calibration:
   calibration_fraction: 0.2       # first 20% of the subject's recording
