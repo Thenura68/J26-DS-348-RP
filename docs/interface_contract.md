@@ -42,7 +42,7 @@ approved by all four members, plus a version bump at the top of this file.
 |---|---|
 | `spike_counts` | `[B, 3]` accumulated output spikes per class |
 | `spike_record` | `[B, T', 3]` per-step output spikes (needed by C4 for attribution) |
-| Prediction | `argmax(spike_counts)` → index into `CLASS_NAMES = ("mild", "moderate", "severe")` |
+| Prediction | `argmax(spike_counts)` → index into `CLASS_NAMES = ("non_depressed", "moderate", "severe")` |
 | Profile file | Encrypted PyTorch state dict of adapter parameters only, target ~48 KB |
 
 ## Boundary 5 — Attribution (C4 → UI)
@@ -52,13 +52,23 @@ approved by all four members, plus a version bump at the top of this file.
 | Channel order | Same as the EEG montage in `configs/common.yaml` (10-20 names mapped for scalp maps) |
 
 ## Labels
-PHQ-9 → severity (`common/labels.py`): 5–9 mild, 10–14 moderate, ≥15 severe.
-**Open decision:** what to do with PHQ-9 < 5 / healthy controls (exclude, or add a "minimal" class).
-Set in `configs/common.yaml → labels.below_mild`.
+PHQ-9 → class (`common/labels.py`, `configs/common.yaml → labels.phq9_bins`), defined for
+every subject: 0–9 `non_depressed`, 10–19 `moderate`, 20–27 `severe` (cut-offs 10 and 20,
+Kroenke et al., 2001). On MODMA this gives 29 / 16 / 8 subjects and matches the
+psychiatrist-confirmed groups exactly (all HC → `non_depressed`, all MDD → `moderate`/`severe`).
+MODMA has no mild-MDD subjects, so there is no separate mild class.
+Field names: `severity_target` (3 classes) and `diagnosis_target` (0 = HC, 1 = MDD).
+
+## Validation folds
+Subject-wise stratified 5-fold, repeated 5 times (`configs/common.yaml → split`,
+`data/splits.py → stratified_subject_kfold`). Subjects, not windows, are split, stratified
+on `severity_target`. All components use the same `data/interim/modma_preprocessed/folds.json`.
+In each fold the test subject's first 20% is calibration (label-free) and the remaining
+80% is evaluation.
 
 ## Open decisions (fill in after the meeting)
 - [ ] Window length (2 s / 10 s / other)
 - [ ] Spike polarity handling confirmed by C1
-- [ ] Healthy controls / minimal class
+- [x] Healthy controls / minimal class: HC form the `non_depressed` class (pending supervisor sign-off)
 - [ ] SNN library shared by C2 and C3 (snnTorch recommended)
 - [ ] Final EEG channel set (128-channel vs 3-channel frontal wearable subset)
