@@ -16,7 +16,7 @@ CONTRACT_VERSION = "0.1"
 
 FEATURE_DIM = 256
 N_CLASSES = 3
-CLASS_NAMES = ("mild", "moderate", "severe")
+CLASS_NAMES = ("non_depressed", "moderate", "severe")
 
 
 class ContractError(ValueError):
