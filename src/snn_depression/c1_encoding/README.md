@@ -303,24 +303,57 @@ Diagnostic figures and the no-Z-score variant are local-only outputs under
 - Pass/fail thresholds remain `null` (report-only) pending team agreement.
 - Full test suite: 69 tests passed.
 
-## 2026-10-20 — Three PHQ-9 classes and stratified subject 5-fold
+## 2026-10-20 — Preprocessing: three PHQ-9 classes and stratified subject 5-fold
 
-- Changed the label scheme (shared `common/labels.py`, `contracts.py`,
-  `configs/common.yaml`) to three PHQ-9 classes defined for every subject:
-  0–9 `non_depressed`, 10–19 `moderate`, 20–27 `severe` (cut-offs 10 and 20).
-  On MODMA this gives 29 / 16 / 8 subjects, and no subject's class contradicts
-  the psychiatrist group.
-- Replaced leave-one-subject-out with stratified 5-fold over subjects, repeated
-  5 times (seed 42), in shared `data/splits.py`. `build_fold_summaries` moved from
-  the preprocessing script into `splits.py` and now checks leakage, full coverage and
-  one test appearance per subject per repeat. This also fixed plain `pytest`, which
-  failed when the test imported from `scripts/`.
-- Added `c1_preprocess_modma.py --refresh-labels-folds`, which rewrites labels, folds,
-  metadata and QC label fields from the existing manifest without touching the EEG
-  arrays (checksum unchanged). The manifest keeps the array run's provenance under
-  `array_preprocessing_run`.
-- Refreshed the local export: 25 folds; each test fold holds 5–6 non_depressed,
-  3–4 moderate and 1–2 severe subjects.
-- The fidelity report's sanity classifier now uses the shared folds and the three
-  classes, and reports balanced accuracy mean ± SD over repeats against chance 0.333.
-- Full test suite: 78 tests passed with plain `pytest`.
+Only labels and cross-validation changed. Signal processing (filtering, bad
+channels, artifacts) and the EEG arrays are unchanged.
+
+### Done
+- Replaced the classes with PHQ-9 ranges 0–9 `non_depressed`, 10–19 `moderate`,
+  20–27 `severe` (cut-offs 10 and 20, Kroenke et al., 2001): 29 / 16 / 8 subjects.
+- Gave every subject, healthy controls included, a 3-class label (`severity_target`);
+  kept the MDD/HC label (`diagnosis_target`: HC = 0, MDD = 1).
+- Added a check that each subject's PHQ-9 class agrees with the psychiatrist
+  diagnosis: 0 disagreements on MODMA.
+- Renamed the classes from `mild/moderate/severe` to `non_depressed/moderate/severe`.
+- Replaced leave-one-subject-out with stratified 5-fold over subjects, repeated 5
+  times (seed 42): 25 folds. Subjects are split, not windows.
+- Kept leave-one-subject-out available as a config option (`split.strategy`).
+- Added automatic fold checks: no subject in both train and test, and every subject
+  tested exactly once per repeat.
+- Added per-class subject counts for train and test to every fold in `folds.json`.
+  Each test fold holds 5–6 `non_depressed`, 3–4 `moderate` and 1–2 `severe` subjects.
+- Moved `build_fold_summaries` from `scripts/c1_preprocess_modma.py` into shared
+  `data/splits.py`. This also fixed plain `pytest`, which failed when a test
+  imported from `scripts/`.
+- Added `python scripts/c1_preprocess_modma.py --refresh-labels-folds` to update
+  labels and folds from the existing manifest without reprocessing the EEG.
+- Refreshed `manifest.json`, `metadata.csv`, `folds.json`, `README.md` and the QC
+  JSON label fields. The `.npy` array checksum is identical before and after.
+- Recorded the provenance of the run that produced the arrays under
+  `array_preprocessing_run` in the manifest.
+- Switched the fidelity report's sanity classifier to the shared folds and three
+  classes. It scored 0.331 ± 0.021 (original) and 0.291 ± 0.027 (reconstructed)
+  balanced accuracy against chance 0.333, so it remains uninformative.
+- Added and updated tests: 78 passed with plain `pytest`.
+- Updated `docs/interface_contract.md` and `docs/decision_log.md`. Supervisor
+  sign-off is pending for both decisions.
+
+### Not changed (existing preprocessing, already in place)
+- Bad channels are interpolated from neighbouring electrodes, not removed.
+- Notch and band-pass filtering, common average reference, calibration-only
+  z-scoring, 2 s windowing and calibration-fitted artifact rejection.
+- The chronological split of each recording into the first 20% (calibration) and
+  the last 80% (evaluation).
+
+### Files changed
+- Shared: `common/labels.py`, `common/contracts.py`, `data/splits.py`,
+  `configs/common.yaml`, `tests/test_data_utils.py`, `tests/test_config.py`,
+  `docs/interface_contract.md`, `docs/decision_log.md`.
+- C1: `scripts/c1_preprocess_modma.py`, `scripts/c1_fidelity_report.py`,
+  `configs/c1_encoding.yaml`, `tests/c1/test_preprocessing.py`.
+
+### Pending
+- A `shared:` PR to `main` for the shared files.
+- C3: the `c3_adapter/adapter.py` docstring still lists `mild, moderate, severe`.
+- C4: still uses 2 classes (HC/MDD) and needs to move to the 3 classes.
