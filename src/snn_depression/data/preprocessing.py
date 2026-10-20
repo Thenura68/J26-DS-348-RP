@@ -11,15 +11,6 @@ from scipy.signal import butter, detrend, filtfilt, iirnotch, sosfiltfilt
 
 
 @dataclass
-class PreprocessingResult:
-    """Windowed subject signal and explicit channel/window QC."""
-
-    windows: np.ndarray  # [N, C, W], float32
-    channel_names: list[str]
-    qc: dict[str, Any]
-
-
-@dataclass
 class SubjectWindowSplit:
     """Leakage-safe chronological calibration/evaluation windows for one subject."""
 
@@ -65,41 +56,6 @@ def make_windows(
         return np.empty((0, eeg.shape[0], win), dtype=eeg.dtype)
     starts = range(0, n_samples - win + 1, step)
     return np.stack([eeg[:, s : s + win] for s in starts])
-
-
-def drop_channels(
-    eeg: np.ndarray, channel_names: Sequence[str], names_to_drop: Sequence[str]
-) -> tuple[np.ndarray, list[str], list[str]]:
-    """Drop configured channels from EEG [C, S], returning kept names and removed names."""
-    _validate_channels(eeg, channel_names, expected_ndim=2)
-    requested = list(dict.fromkeys(names_to_drop))
-    missing = sorted(set(requested).difference(channel_names))
-    if missing:
-        raise ValueError(f"Configured channel(s) to drop are absent: {missing}")
-    removed = [name for name in channel_names if name in requested]
-    kept_indices = [i for i, name in enumerate(channel_names) if name not in requested]
-    if not kept_indices:
-        raise ValueError("Dropping configured channels would leave no EEG channels")
-    return eeg[kept_indices].copy(), [channel_names[i] for i in kept_indices], removed
-
-
-def select_channels(
-    eeg: np.ndarray, channel_names: Sequence[str], names_to_keep: Sequence[str] | None
-) -> tuple[np.ndarray, list[str]]:
-    """Select named EEG channels from [C, S] or windowed [N, C, W] data."""
-    if eeg.ndim not in (2, 3):
-        raise ValueError(f"Expected EEG with 2 or 3 dimensions, got shape {eeg.shape}")
-    _validate_channels(eeg, channel_names, expected_ndim=eeg.ndim)
-    if names_to_keep is None:
-        return eeg.copy(), list(channel_names)
-    requested = list(dict.fromkeys(names_to_keep))
-    if not requested:
-        raise ValueError("Channel selection cannot be an empty list")
-    missing = [name for name in requested if name not in channel_names]
-    if missing:
-        raise ValueError(f"Configured channel(s) to keep are absent: {missing}")
-    indices = [channel_names.index(name) for name in requested]
-    return eeg[:, indices].copy() if eeg.ndim == 3 else eeg[indices].copy(), requested
 
 
 def _validate_channels(
@@ -228,103 +184,53 @@ def flag_bad_channels(
     return bad
 
 
-def reject_bad_segments(
-    windows: np.ndarray,
-    peak_to_peak_threshold: float | None = None,
-    peak_to_peak_mad_multiplier: float | None = 10.0,
-) -> tuple[np.ndarray, list[int], float | None]:
-    """Reject [N, C, W] windows exceeding absolute or robust relative peak-to-peak limits."""
-    if windows.ndim != 3:
-        raise ValueError(f"Expected windows [N, C, W], got shape {windows.shape}")
-    if not np.isfinite(windows).all():
-        raise ValueError("Windows contain NaN or Inf")
-    if peak_to_peak_threshold is not None and peak_to_peak_threshold <= 0:
-        raise ValueError("Absolute peak-to-peak threshold must be positive")
-    if (
-        peak_to_peak_threshold is None
-        and (peak_to_peak_mad_multiplier is None or peak_to_peak_mad_multiplier <= 0)
-    ):
-        raise ValueError("Configure an absolute peak-to-peak threshold or MAD multiplier")
-    if windows.shape[0] == 0:
-        return windows.copy(), [], peak_to_peak_threshold
+def zscore_from_calibration(
+    calibration: np.ndarray,
+    evaluation: np.ndarray,
+    channel_names: Sequence[str],
+    epsilon: float = 1e-8,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Z-score calibration and evaluation EEG [C, S] with calibration-only statistics.
 
-    amplitudes = np.ptp(windows, axis=-1).max(axis=1)
-    if peak_to_peak_threshold is None:
-        median = float(np.median(amplitudes))
-        mad = float(np.median(np.abs(amplitudes - median)))
-        threshold = median + float(peak_to_peak_mad_multiplier) * 1.4826 * mad
-    else:
-        threshold = float(peak_to_peak_threshold)
-    rejected = np.flatnonzero(amplitudes > threshold).tolist()
-    keep_mask = np.ones(windows.shape[0], dtype=bool)
-    keep_mask[rejected] = False
-    return windows[keep_mask].copy(), rejected, threshold
-
-
-def normalize_from_calibration(
-    eeg: np.ndarray, calibration_fraction: float = 0.2
-) -> np.ndarray:
-    """Z-score EEG [C, S] using only the first chronological calibration segment."""
-    if eeg.ndim != 2 or eeg.shape[-1] < 2:
-        raise ValueError(f"Expected EEG [C, S] with at least two samples, got {eeg.shape}")
-    if not 0 < calibration_fraction < 1:
-        raise ValueError("Calibration fraction must be in (0, 1)")
-    calibration_samples = max(2, int(np.floor(eeg.shape[-1] * calibration_fraction)))
-    if calibration_samples >= eeg.shape[-1]:
-        raise ValueError(
-            f"Not enough samples ({eeg.shape[-1]}) for calibration fraction "
-            f"{calibration_fraction}"
-        )
-    calibration = eeg[:, :calibration_samples]
+    Per-channel mean and standard deviation come from ``calibration`` alone and are
+    applied unchanged to ``evaluation``, so evaluation values never influence scaling.
+    """
+    if not np.isfinite(epsilon) or epsilon <= 0:
+        raise ValueError("amplitude_scaling.epsilon must be positive and finite")
     mean = np.mean(calibration, axis=-1, keepdims=True)
     std = np.std(calibration, axis=-1, keepdims=True)
-    if np.any(std <= np.finfo(np.float64).eps):
-        flat = np.flatnonzero(std[:, 0] <= np.finfo(np.float64).eps).tolist()
-        raise ValueError(f"Calibration segment has zero variance in channel index(es): {flat}")
-    return (eeg - mean) / std
-
-
-def remove_ica_eog_artifacts(
-    eeg: np.ndarray,
-    fs: float,
-    channel_names: Sequence[str],
-    eog_channels: Sequence[str],
-    random_state: int = 42,
-    threshold: float = 3.0,
-) -> tuple[np.ndarray, list[str], list[int]]:
-    """Use MNE ICA/EOG correlation to remove blink components from EEG [C, S]."""
-    _validate_channels(eeg, channel_names, expected_ndim=2)
-    missing = [name for name in eog_channels if name not in channel_names]
-    if not eog_channels or missing:
+    if np.any(std <= epsilon):
+        flat = [channel_names[index] for index in np.flatnonzero(std[:, 0] <= epsilon)]
         raise ValueError(
-            "ICA eye-blink removal requires configured EOG channels present in the "
-            f"recording; configured={list(eog_channels)}, missing={missing}"
+            "Calibration-only normalization found zero-variance channel(s) "
+            f"after interpolation: {flat}"
         )
-    if threshold <= 0:
-        raise ValueError(f"ICA EOG threshold must be positive, got {threshold}")
+    return (calibration - mean) / std, (evaluation - mean) / std
 
-    import mne
-    from mne.preprocessing import ICA
 
-    eog_set = set(eog_channels)
-    info = mne.create_info(
-        ch_names=list(channel_names),
-        sfreq=fs,
-        ch_types=["eog" if name in eog_set else "eeg" for name in channel_names],
-    )
-    raw = mne.io.RawArray(eeg, info, verbose="ERROR")
-    ica = ICA(n_components=None, random_state=random_state, max_iter="auto")
-    ica.fit(raw, picks="eeg", verbose="ERROR")
-    excluded: set[int] = set()
-    for name in eog_channels:
-        indices, _ = ica.find_bads_eog(
-            raw, ch_name=name, threshold=threshold, verbose="ERROR"
-        )
-        excluded.update(indices)
-    cleaned = ica.apply(raw.copy(), exclude=sorted(excluded), verbose="ERROR")
-    kept_names = [name for name in channel_names if name not in eog_set]
-    cleaned_eeg = cleaned.get_data(picks="eeg", verbose="ERROR")
-    return cleaned_eeg, kept_names, sorted(excluded)
+def calibration_artifact_limit(
+    calibration_windows: np.ndarray, mad_multiplier: float = 10.0
+) -> float:
+    """Peak-to-peak artifact limit fitted on calibration windows [N, C, W].
+
+    Each window's amplitude is its largest per-channel peak-to-peak value; the limit is
+    median + ``mad_multiplier`` * 1.4826 * MAD of those amplitudes.
+    """
+    if calibration_windows.ndim != 3 or calibration_windows.shape[0] == 0:
+        raise ValueError(f"Expected non-empty windows [N, C, W], got {calibration_windows.shape}")
+    if not np.isfinite(mad_multiplier) or mad_multiplier <= 0:
+        raise ValueError("peak_to_peak_mad_multiplier must be positive and finite")
+    amplitudes = np.ptp(calibration_windows, axis=-1).max(axis=1)
+    median = float(np.median(amplitudes))
+    mad = float(np.median(np.abs(amplitudes - median)))
+    return median + mad_multiplier * 1.4826 * mad
+
+
+def within_artifact_limit(windows: np.ndarray, limit: float) -> np.ndarray:
+    """Boolean keep-mask [N]: True where a window's largest channel peak-to-peak <= limit."""
+    if windows.ndim != 3:
+        raise ValueError(f"Expected windows [N, C, W], got {windows.shape}")
+    return np.ptp(windows, axis=-1).max(axis=1) <= limit
 
 
 def _filter_chunk_with_padding(
@@ -525,22 +431,12 @@ def prepare_subject_windows(
     scaling = settings.get("amplitude_scaling", {"method": "zscore"})
     scaling_method = str(scaling.get("method", "zscore")).casefold()
     if scaling_method == "zscore":
-        epsilon = float(scaling.get("epsilon", 1e-8))
-        if not np.isfinite(epsilon) or epsilon <= 0:
-            raise ValueError("amplitude_scaling.epsilon must be positive and finite")
-        mean = np.mean(calibration_filtered, axis=-1, keepdims=True)
-        std = np.std(calibration_filtered, axis=-1, keepdims=True)
-        if np.any(std <= epsilon):
-            flat = [
-                scalp_names[index]
-                for index in np.flatnonzero(std[:, 0] <= epsilon)
-            ]
-            raise ValueError(
-                "Calibration-only normalization found zero-variance channel(s) "
-                f"after interpolation: {flat}"
-            )
-        calibration_scaled = (calibration_filtered - mean) / std
-        evaluation_scaled = (evaluation_filtered - mean) / std
+        calibration_scaled, evaluation_scaled = zscore_from_calibration(
+            calibration_filtered,
+            evaluation_filtered,
+            scalp_names,
+            epsilon=float(scaling.get("epsilon", 1e-8)),
+        )
         output_units = "calibration-only per-channel z-score (dimensionless)"
     elif scaling_method == "microvolts":
         factor = scaling.get("microvolts_per_unit")
@@ -576,15 +472,9 @@ def prepare_subject_windows(
         )
 
     ptp_multiplier = float(artifact.get("peak_to_peak_mad_multiplier", 10.0))
-    if not np.isfinite(ptp_multiplier) or ptp_multiplier <= 0:
-        raise ValueError("peak_to_peak_mad_multiplier must be positive and finite")
-    calibration_ptp = np.ptp(calibration_windows, axis=-1).max(axis=1)
-    ptp_median = float(np.median(calibration_ptp))
-    ptp_mad = float(np.median(np.abs(calibration_ptp - ptp_median)))
-    artifact_limit = ptp_median + ptp_multiplier * 1.4826 * ptp_mad
-    calibration_keep = calibration_ptp <= artifact_limit
-    evaluation_ptp = np.ptp(evaluation_windows, axis=-1).max(axis=1)
-    evaluation_keep = evaluation_ptp <= artifact_limit
+    artifact_limit = calibration_artifact_limit(calibration_windows, ptp_multiplier)
+    calibration_keep = within_artifact_limit(calibration_windows, artifact_limit)
+    evaluation_keep = within_artifact_limit(evaluation_windows, artifact_limit)
     if not calibration_keep.any() or not evaluation_keep.any():
         raise ValueError(
             "Calibration-only artifact threshold rejected every window in a partition"
@@ -654,44 +544,3 @@ def prepare_subject_windows(
         channel_names=scalp_names,
         qc=qc,
     )
-
-
-def preprocess_eeg(
-    eeg: np.ndarray,
-    channel_names: Sequence[str],
-    fs: float,
-    config: dict[str, Any],
-    random_state: int = 42,
-) -> PreprocessingResult:
-    """Compatibility wrapper over the leakage-safe MODMA subject preprocessing.
-
-    Prefer :func:`prepare_subject_windows` when calibration and evaluation must stay
-    separate. This wrapper concatenates the two returned partitions in chronological
-    order but retains their boundaries and QC counts in ``qc``.
-    """
-    del random_state
-    split = prepare_subject_windows(eeg, channel_names, fs, config)
-    windows = split.windows
-    qc = dict(split.qc)
-    qc.update(
-        {
-            "channels_flagged": split.qc["channels_flagged_on_calibration_only"],
-            "channels_dropped_by_config": [split.qc["reference_row_dropped"]],
-            "channels_dropped_as_bad": [],
-            "windows_before_rejection": (
-                split.qc["calibration_windows_before_rejection"]
-                + split.qc["evaluation_windows_before_rejection"]
-            ),
-            "windows_rejected": (
-                split.qc["calibration_windows_rejected"]
-                + split.qc["evaluation_windows_rejected"]
-            ),
-            "windows_kept": int(windows.shape[0]),
-            "amplitude_units": split.qc["output_units"],
-            "normalization_enabled": split.qc["scaling_method"] == "zscore",
-            "notch_frequency_hz": config["preprocessing"]["notch"].get(
-                "frequency_hz"
-            ),
-        }
-    )
-    return PreprocessingResult(windows, split.channel_names, qc)
