@@ -133,3 +133,194 @@ to GitHub.
 The 2026-10-09 notes above describe the earlier preprocessing run and are
 historical. The 2026-10-10 leakage-safe settings and regenerated outputs replace
 that earlier processing; use the current manifest for the active run details.
+
+## 2026-10-10 — C1 threshold calibration (Phase 1)
+
+- Added calibration-only TBR threshold fitting. Derivatives are computed within
+  each calibration window and pooled per channel; no derivative crosses a
+  window boundary.
+- Used the manifest's distinct calibration/evaluation arrays. The 20% raw-time
+  split was established before artifact rejection. No evaluation window crossed
+  the split boundary; the overlap audit dropped 0 evaluation windows.
+- Used the configured rule `mean(diff) + k * std(diff)` and a minimum threshold
+  for flat/near-zero-variance channels. Profiles retain every channel's mean
+  derivative, standard deviation, threshold, and unit.
+- Swept configured k candidates using median subject calibration SNR only.
+  The selected global `k` was 0.5; the complete curve and per-subject profiles
+  are in the local `outputs/c1/calibration/` directory.
+- Added a regional threshold table for three representative subjects and a
+  per-channel threshold/mean-derivative CSV for the cohort.
+- The best median calibration SNR in the sweep was -2.6844 dB. The values are
+  descriptive calibration results, not validated performance targets; no
+  evaluation data was used to select k.
+- Ran the full test suite successfully: 33 tests passed. Calibration tests use
+  synthetic signals only.
+
+Calibration artifacts under `outputs/c1/calibration/` are local-only outputs
+and must not be committed.
+
+## 2026-10-10 — TBR encoder/decoder (Phase 2)
+
+- Implemented strict signed TBR: a derivative strictly greater than the
+  per-channel threshold emits `+1`; strictly less than its negative emits `-1`;
+  all other differences emit `0`. The first time step is silent because the
+  decoder receives the true first sample as side information.
+- Added dual-binary conversion in `[UP_0..UP_(C-1), DOWN_0..DOWN_(C-1)]` order.
+  The shared boundary output is float32 `[B, T, 2C]` and passes
+  `check_spike_train`; uint8 is reserved for later storage. Signed int8 output is
+  explicitly internal and does not satisfy the shared contract.
+- Added adaptive per-channel thresholds fitted from calibration windows and a
+  fixed scalar-threshold encoder. The decoder recombines UP/DOWN channels and
+  cumulatively adds `spike * threshold`, initialized from the true first sample
+  of each window.
+- Ran the configured five-second evaluation demo for subject `02010002`
+  (`E1-E3` overlay). SNR was -2.4079 dB, RMSE 1.37843 z-score units,
+  correlation 0.225420, and spike density 0.290769 (145.3844 spikes/s/EEG
+  channel). The raster, density, and overlays are saved locally under
+  `outputs/c1/encoding_demo/`.
+- Reconstruction is intentionally lossy: sub-threshold changes are dropped,
+  and a derivative larger than one threshold still emits only one signed
+  event. The accumulated error can therefore grow over time; no general bounded
+  reconstruction-error claim is made.
+- The full test suite passed: 43 tests. Synthetic tests cover strict threshold
+  comparisons, one-spike step loss, the encoder/decoder residual identity,
+  constant signals, per-channel thresholds, dual-binary round-trip, and the
+  contract boundary.
+
+The Phase 2 example is descriptive, not tuned against provisional fidelity
+targets. Optional smoothed decoding was not added.
+
+## 2026-10-11 — TBR diagnostics and Step-Forward comparison
+
+- Checked the three follow-up items from the previous review: the very-small-
+  threshold sine check was missing, the old k grid stopped at 0.5 before
+  continuing to [1, 1.5, 2, 2.5, 3], and no unnormalized preprocessing variant
+  existed. Added the sine check, expanded the TBR grid to
+  `[0.05, 0.1, 0.2, 0.3, 0.5, 1, 1.5, 2, 3]`, and generated a local
+  no-Z-score variant for diagnostics.
+- Implemented Step-Forward with baseline initialized from the first sample,
+  one signed spike maximum per time step, and calibration thresholds
+  `k_sf * std(x)`. Its output can also be represented as contract-compatible
+  float32 dual-binary spikes.
+- Rebuilt and saved calibration and evaluation windows for all 53 subjects in
+  the unnormalized variant; this remains under `data/interim/` and is ignored
+  by Git.
+- Ran evaluation-only diagnostics on three MDD and two HC subjects. All TBR
+  and SF parameter choices were selected from calibration-only curves. The
+  unnormalized variant uses native MAT units, which remain unverified.
+- TBR's best calibration-median-SNR parameter was `k=0.2`; its median
+  evaluation SNR across the five diagnostic subjects was -2.368 dB, with
+  median RMSE 17.191 native units and correlation 0.146. SF's calibration-best
+  adaptive parameter was `k_sf=0.5`; its corresponding evaluation medians were
+  8.534 dB, 4.214 native units, and 0.927. These are exploratory results on
+  five subjects, not cohort-wide inference.
+- At matched calibration density near 0.10, TBR selected `k=1.5` (actual
+  calibration median density 0.118) and SF selected `k_sf=1.0` (0.091).
+  Evaluation median densities were 0.091 for TBR and 0.050 for SF, illustrating
+  that matching calibration density does not guarantee matched evaluation
+  density.
+- For TBR, calibration candidates nearest densities 0.05, 0.10, and 0.20 were
+  `k=2.0` (density 0.043), `k=1.5` (0.118), and `k=1.5` (0.118). The SF sweep
+  did not reach 0.05; its nearest candidates were `k_sf=1.0` (0.091),
+  `k_sf=1.0` (0.091), and `k_sf=0.75` (0.145).
+- Position-wise TBR evaluation SNR typically declined from the first 50 to
+  later samples. Residual standard deviation did not rise monotonically for
+  every subject, so random-walk growth is not uniform across this small sample.
+  Per-subject ratios and overload fractions are in the diagnostics CSV.
+- Optional SF re-anchoring improved median SNR by 0.145 dB at 50 samples and
+  0.066 dB at 100 samples. It requires respectively 1,280/640 additional
+  channel values per 500-sample window (40,960/20,480 bits at the configured
+  32 bits per value).
+- The clean 10 Hz synthetic sine test with threshold 0.001 produced only
+  0.046 dB SNR and RMSE 0.7034; this negative result is consistent with strict
+  one-spike TBR struggling when a per-sample derivative can exceed threshold
+  by much more than one threshold unit.
+- The full test suite passed: 50 tests. The TBR encoder implementation itself
+  was not changed for this diagnostic task.
+
+Diagnostic figures and the no-Z-score variant are local-only outputs under
+`outputs/c1/diagnostics/` and `data/interim/modma_preprocessed_unnormalized/`.
+
+## 2026-10-16 — Adaptive TBR consolidation and leaky fidelity decoder
+
+- Made TBR the single main encoder with one implementation,
+  `encoder.tbr_encode_signed`. The encoders, the k sweep and the diagnostics
+  script all call it; the duplicate NumPy encoder/decoder in `calibration.py`
+  was removed.
+- Removed the `level_crossing` (send-on-delta) mode from `encoder.py`. It is
+  not TBR, it duplicated the Step-Forward baseline in `step_forward.py`, and it
+  ran a per-sample Python loop.
+- Split responsibilities: `calibration.py` learns per-subject thresholds
+  (`ThresholdSettings`, `compute_threshold_profile`, `fit_thresholds`) and the
+  global k; `AdaptiveThresholdEncoder.from_profile` applies them;
+  `decoder.reconstruct` is the single decoder; `fidelity.py` now implements
+  SNR, RMSE, correlation and spike density. `ThresholdProfile.from_dict`
+  reloads saved profile JSON.
+- Added an optional leak to the decoder (`x_hat[t] = leak*x_hat[t-1] + theta*s[t]`,
+  `leak = exp(-2*pi*fc/fs)`, configured as `decoder.leak_cutoff_hz: 1.0`). This
+  removes the random-walk drift of standard TBR decoding on band-passed EEG.
+  `leak_cutoff_hz: null` restores standard decoding. Only the fidelity check
+  uses the decoder; the spikes sent to C2 are unchanged.
+- Added the `sparsest_within_snr_tolerance` k-selection rule: among k within
+  `snr_tolerance_db` (0.5 dB) of the best median calibration SNR, choose the
+  lowest spike density, favouring low-power operation.
+- Replaced the no-op `drop_evaluation_overlaps` with
+  `check_calibration_windows_inside_split`, which raises if any calibration
+  window extends past the raw split sample.
+- Removed unused encoder config keys (`threshold_stat`, `threshold_k`,
+  `signed_spikes`).
+- Calibration-only sweep on all 53 subjects (leak cutoff 1 Hz): k=0.5 gave
+  2.04 dB median SNR at density 0.594; k=1.0 gave 2.15 dB at 0.294, and was
+  selected. Previously, standard decoding peaked at -2.68 dB.
+- Evaluation demo for `02010002` (E1-E3, 5 s): SNR 1.70 dB, correlation 0.585,
+  dual-binary density 0.135 (previously -2.41 dB, 0.225 at k=0.5).
+- Full test suite: 61 tests passed.
+
+## 2026-10-16 — Depression-relevant fidelity check
+
+- Extended `fidelity.py` beyond waveform metrics: Welch band power per channel
+  (delta, theta, alpha, beta, gamma), relative band power, frontal alpha
+  asymmetry (FAA, `ln(alpha_right) - ln(alpha_left)`), `spectral_fidelity`
+  (band-power bias and absolute error in dB, relative-power error, FAA),
+  `passes_thresholds` for per-session pass/fail, and `cohens_d`.
+- FAA pairs use the HydroCel electrodes nearest the 10-20 sites, checked
+  against MNE montage positions: F3=E24, F4=E124, F7=E33, F8=E122.
+- Added `scripts/c1_fidelity_report.py`. For every subject's evaluation
+  windows it loads the calibration profile, encodes to contract spikes, decodes,
+  and reports session metrics. It also reports cross-subject feature
+  preservation, MDD-vs-HC Cohen's d and PHQ-9 Spearman correlations for
+  original vs reconstructed features, and a LOSO logistic-regression sanity
+  classifier.
+- Cohort result (53 subjects, k=1.0, leak cutoff 1 Hz, evaluation windows):
+  median SNR 1.92 dB, correlation 0.605, density 0.267. Absolute band power is
+  underestimated uniformly by about 4.6-6.3 dB in every band. Relative band
+  power keeps the subject ranking (Spearman 0.90-0.99 for all 15 regional
+  features), FAA ranking is kept (F3/F4 0.908, F7/F8 0.868), and MDD-vs-HC
+  effect sizes and PHQ-9 correlations stay close to the original values.
+- The sanity classifier was at chance level for both original (0.443) and
+  reconstructed (0.509) features, so it cannot show information loss or
+  preservation. These hand-crafted features do not separate MDD from HC here.
+- Pass/fail thresholds remain `null` (report-only) pending team agreement.
+- Full test suite: 69 tests passed.
+
+## 2026-10-20 — Three PHQ-9 classes and stratified subject 5-fold
+
+- Changed the label scheme (shared `common/labels.py`, `contracts.py`,
+  `configs/common.yaml`) to three PHQ-9 classes defined for every subject:
+  0–9 `non_depressed`, 10–19 `moderate`, 20–27 `severe` (cut-offs 10 and 20).
+  On MODMA this gives 29 / 16 / 8 subjects, and no subject's class contradicts
+  the psychiatrist group.
+- Replaced leave-one-subject-out with stratified 5-fold over subjects, repeated
+  5 times (seed 42), in shared `data/splits.py`. `build_fold_summaries` moved from
+  the preprocessing script into `splits.py` and now checks leakage, full coverage and
+  one test appearance per subject per repeat. This also fixed plain `pytest`, which
+  failed when the test imported from `scripts/`.
+- Added `c1_preprocess_modma.py --refresh-labels-folds`, which rewrites labels, folds,
+  metadata and QC label fields from the existing manifest without touching the EEG
+  arrays (checksum unchanged). The manifest keeps the array run's provenance under
+  `array_preprocessing_run`.
+- Refreshed the local export: 25 folds; each test fold holds 5–6 non_depressed,
+  3–4 moderate and 1–2 severe subjects.
+- The fidelity report's sanity classifier now uses the shared folds and the three
+  classes, and reports balanced accuracy mean ± SD over repeats against chance 0.333.
+- Full test suite: 78 tests passed with plain `pytest`.
