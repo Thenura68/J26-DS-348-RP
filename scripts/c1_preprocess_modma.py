@@ -31,12 +31,13 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from snn_depression.common.config import load_config
 from snn_depression.common.contracts import check_eeg
-from snn_depression.common.labels import subject_targets
+from snn_depression.common.contracts import CLASS_NAMES
+from snn_depression.common.labels import PHQ9_BINS, label_disagrees_with_group, subject_targets
 from snn_depression.common.paths import INTERIM_DIR, OUTPUT_ROOT
 from snn_depression.common.seed import set_seed
 from snn_depression.data.modma import list_subjects, load_subject
 from snn_depression.data.preprocessing import prepare_subject_windows
-from snn_depression.data.splits import leave_one_subject_out
+from snn_depression.data.splits import build_fold_summaries, subject_folds
 
 
 def git_commit_hash() -> str:
@@ -336,81 +337,58 @@ def write_metadata_csv(rows: list[dict], path: Path) -> None:
             })
 
 
-def build_fold_summaries(
-    subject_rows: list[dict],
-) -> list[dict]:
-    """Summarize leave-one-subject-out folds without splitting any subject's windows."""
-    subject_ids = [str(row["subject_id"]) for row in subject_rows]
-    if len(subject_ids) < 2:
-        raise ValueError("At least two subjects are required to summarize subject-wise folds")
-    if len(set(subject_ids)) != len(subject_ids):
-        raise ValueError("Subject metadata contains duplicate subject IDs")
-    row_by_id = {str(row["subject_id"]): row for row in subject_rows}
-    groups = [str(row["group"]) for row in subject_rows]
-    fold_summaries = []
-
-    for fold_number, (test_subject, train_indices, test_indices) in enumerate(
-        leave_one_subject_out(subject_ids), start=1
-    ):
-        test_id = str(test_subject)
-        train_ids = [subject_ids[index] for index in train_indices]
-        test_ids = [subject_ids[index] for index in test_indices]
-        if test_ids != [test_id] or test_id in train_ids:
-            raise ValueError(f"Subject-wise split leakage detected in fold {fold_number}")
-
-        test_row = row_by_id[test_id]
-        calibration_count = int(test_row["n_calibration_windows"])
-        evaluation_count = int(test_row["n_evaluation_windows"])
-        if calibration_count < 1 or evaluation_count < 1:
-            raise ValueError(
-                f"Subject {test_id} has an empty calibration or evaluation partition"
-            )
-        train_group_counts = dict(Counter(groups[index] for index in train_indices))
-        fold_summaries.append(
-            {
-                "fold": fold_number,
-                "test_subject_id": test_id,
-                "test_group": test_row["group"],
-                "training_subject_ids": train_ids,
-                "training_group_counts": train_group_counts,
-                "test_windows": int(test_row["n_windows"]),
-                "calibration_window_count": calibration_count,
-                "evaluation_window_count": evaluation_count,
-                "calibration_window_source_indices": [
-                    int(test_row["calibration_source_window_indices"][0]),
-                    int(test_row["calibration_source_window_indices"][-1]),
-                ],
-                "evaluation_window_source_indices": [
-                    int(test_row["evaluation_source_window_indices"][0]),
-                    int(test_row["evaluation_source_window_indices"][-1]),
-                ],
-                "split_sample": int(test_row["split_sample"]),
-                "c1_baseline_sec": float(test_row["c1_baseline_sec"]),
-            }
-        )
-    return fold_summaries
-
-
 def write_manifest(
     config: dict,
     subject_rows: list[dict],
     output_dir: Path,
     expected_subject_ids: list[str],
+    preprocessing_provenance: dict | None = None,
 ) -> None:
-    """Write a JSON manifest and README for the processed dataset."""
+    """Write a JSON manifest, folds and README for the processed dataset.
+
+    ``preprocessing_provenance`` (generated_at_utc, git_commit, git_worktree_dirty) is
+    passed when only labels and folds are refreshed, so the manifest keeps recording
+    which run produced the arrays.
+    """
     processed_ids = {str(row["subject_id"]) for row in subject_rows}
     dataset_complete = processed_ids == set(expected_subject_ids)
     group_counts = dict(Counter(row["group"] for row in subject_rows))
-    calibration_fraction = float(config.get("split", {}).get("calibration_fraction", 0.2))
-    folds = (
-        build_fold_summaries(subject_rows)
-        if dataset_complete
-        else []
-    )
+    split_config = dict(config.get("split", {}))
+    strategy = split_config.get("strategy", "stratified_subject_kfold")
+    stratify_on = split_config.get("stratify_on", "severity_target")
+    calibration_fraction = float(split_config.get("calibration_fraction", 0.2))
+    if dataset_complete:
+        ordered_rows = sorted(subject_rows, key=lambda row: str(row["subject_id"]))
+        folds = build_fold_summaries(
+            subject_rows,
+            subject_folds(
+                [str(row["subject_id"]) for row in ordered_rows],
+                [int(row[stratify_on]) for row in ordered_rows],
+                split_config,
+            ),
+            label_key=stratify_on,
+        )
+    else:
+        folds = []
+    class_counts = {
+        name: sum(row["severity_target"] == index for row in subject_rows)
+        for index, name in enumerate(CLASS_NAMES)
+    }
+    label_mismatches = [
+        str(row["subject_id"])
+        for row in subject_rows
+        if label_disagrees_with_group(str(row["group"]), int(row["phq9"]))
+    ]
     (output_dir / "folds.json").write_text(
         json.dumps(
             {
-                "strategy": "leave_one_subject_out",
+                "strategy": strategy,
+                "n_splits": split_config.get("n_splits"),
+                "n_repeats": split_config.get("n_repeats"),
+                "seed": split_config.get("seed"),
+                "stratify_on": stratify_on,
+                "class_names": list(CLASS_NAMES),
+                "unit_of_split": "subject",
                 "dataset_complete": dataset_complete,
                 "calibration_fraction": calibration_fraction,
                 "folds": folds,
@@ -442,6 +420,11 @@ def write_manifest(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "git_commit": git_commit_hash(),
         "git_worktree_dirty": git_worktree_is_dirty(),
+        **(
+            {"array_preprocessing_run": preprocessing_provenance}
+            if preprocessing_provenance
+            else {}
+        ),
         "n_subjects": len(subject_rows),
         "expected_subjects": len(expected_subject_ids),
         "dataset_complete": dataset_complete,
@@ -461,10 +444,22 @@ def write_manifest(
         "source_unit": source_unit,
         "reference": reference_description,
         "channel_montage": config["preprocessing"].get("montage", "GSN-HydroCel-128"),
+        "labels": {
+            "scheme": config.get("labels", {}).get("scheme", "phq9"),
+            "class_names": list(CLASS_NAMES),
+            "phq9_bins": {name: list(bounds) for name, bounds in PHQ9_BINS.items()},
+            "target_field": "severity_target",
+            "class_counts": class_counts,
+            "subjects_where_phq9_class_contradicts_diagnosis": label_mismatches,
+        },
         "subject_wise_split": {
-            "strategy": "leave_one_subject_out",
+            "strategy": strategy,
             "folds_file": "folds.json",
             "n_folds": len(folds),
+            "n_splits": split_config.get("n_splits"),
+            "n_repeats": split_config.get("n_repeats"),
+            "seed": split_config.get("seed"),
+            "stratify_on": stratify_on,
             "calibration_fraction": calibration_fraction,
             "split_before_processing": True,
         },
@@ -488,7 +483,7 @@ def write_manifest(
             "flat_std_threshold": config["preprocessing"]["artifact"].get("flat_std_threshold"),
             "max_std_ratio": config["preprocessing"]["artifact"].get("max_std_ratio"),
             "peak_to_peak_mad_multiplier": config["preprocessing"]["artifact"].get("peak_to_peak_mad_multiplier"),
-            "ica_enabled": config["preprocessing"]["artifact"].get("ica", {}).get("enabled", False),
+            "ica_enabled": False,
             "threshold_fit_partition": "calibration only",
         },
         "outputs": {
@@ -520,11 +515,14 @@ statistics. Outputs are `{output_unit}` `[N, C, W]` float32 windows.
 - Window length: {manifest['filter_settings']['window_sec']} s
 - Window overlap: {manifest['filter_settings']['window_overlap']}
 - Git commit: {manifest['git_commit']}
+- Classes ({manifest['labels']['target_field']}): {manifest['labels']['class_counts']}
+- PHQ-9 bins: {manifest['labels']['phq9_bins']}
+- Split: {strategy}, {manifest['subject_wise_split']['n_folds']} folds, stratified on {stratify_on}
 
 Files:
 - `metadata.csv` — subject/demographic data, window rejection rate, channel/artifact summary, sampling rate, duration and units
 - `manifest.json` — JSON manifest for the run
-- `folds.json` — subject-wise folds and per-fold MDD/HC training counts; empty unless all subjects are processed
+- `folds.json` — subject-wise folds (train/test subject IDs, per-class counts); empty unless all subjects are processed
 - `<subject_id>_calibration.npy` — calibration windows only
 - `<subject_id>_evaluation.npy` — evaluation windows only
 - `<subject_id>.npy` — combined chronological windows for compatibility
@@ -537,7 +535,52 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subject", help="Optional single subject ID to process; defaults to every subject.")
     parser.add_argument("--limit", type=int, default=None, help="Optional cap on the number of subjects to process.")
     parser.add_argument("--config", default="c1_encoding", help="YAML config name under configs/.")
+    parser.add_argument(
+        "--refresh-labels-folds",
+        action="store_true",
+        help=(
+            "Recompute labels and folds from the existing manifest without reprocessing EEG; "
+            "the .npy arrays are not touched."
+        ),
+    )
     return parser.parse_args()
+
+
+def refresh_labels_and_folds(config: dict, output_dir: Path) -> None:
+    """Rewrite labels, folds, metadata and QC label fields from the existing manifest.
+
+    Uses each row's stored group and PHQ-9, so no recording is reloaded and no array
+    is rewritten. The manifest keeps the provenance of the run that produced the arrays.
+    """
+    manifest_path = output_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"No manifest to refresh: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not manifest.get("dataset_complete"):
+        raise ValueError("Refreshing folds requires a complete preprocessing export")
+    provenance = manifest.get("array_preprocessing_run") or {
+        key: manifest.get(key)
+        for key in ("generated_at_utc", "git_commit", "git_worktree_dirty")
+    }
+    rows = manifest["subjects"]
+    for row in rows:
+        row["diagnosis_target"], row["severity_target"] = subject_targets(
+            str(row["group"]), int(row["phq9"])
+        )
+        qc_path = output_dir / "qc" / f"{row['subject_id']}_qc.json"
+        if qc_path.is_file():
+            qc = json.loads(qc_path.read_text(encoding="utf-8"))
+            qc["diagnosis_target"] = row["diagnosis_target"]
+            qc["severity_target"] = row["severity_target"]
+            qc_path.write_text(json.dumps(qc, indent=2), encoding="utf-8")
+    write_metadata_csv(rows, output_dir / "metadata.csv")
+    write_manifest(
+        config,
+        rows,
+        output_dir,
+        [str(row["subject_id"]) for row in rows],
+        preprocessing_provenance=provenance,
+    )
 
 
 def main() -> None:
@@ -546,6 +589,10 @@ def main() -> None:
     config = load_config(args.config)
 
     output_dir = INTERIM_DIR / "modma_preprocessed"
+    if args.refresh_labels_folds:
+        refresh_labels_and_folds(config, output_dir)
+        print(f"Refreshed labels and folds in {output_dir} (EEG arrays unchanged)")
+        return
     output_dir.mkdir(parents=True, exist_ok=True)
     qc_dir = output_dir / "qc"
     qc_dir.mkdir(parents=True, exist_ok=True)
