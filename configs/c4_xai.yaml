@@ -9,5 +9,52 @@ faithfulness:
   min_confidence_drop: null       # the "≥X%" target from the proposal
 
 visualization:
-  montage: standard_1020
+  montage: GSN-HydroCel-128       # MODMA net; E-numbers are labelled with 10-20 equivalents
   backend: mne
+
+# ── Objective 1: non-spiking LSTM + SHAP reference ─────────────────────────────────
+baseline:
+  features_subdir: c4_baseline    # band-power features under data/processed/
+  output_subdir: baseline         # results under outputs/c4/
+  channels: "1020"                # all | "1020" (18 electrodes with 10-20 names) | list of names
+  band_power_segment_sec: 1.0     # Welch segment inside each 2 s C1 window
+  seq_windows: 15                 # sequence length in C1 windows (15 × 2 s = 30 s)
+  train_stride_windows: 3
+  eval_stride_windows: 15         # non-overlapping sequences for val/test
+  n_folds: 5                      # subject-wise stratified CV
+  val_fraction: 0.15              # of the training subjects, for early stopping
+  model:
+    input_proj: 16
+    hidden: 16
+    layers: 2
+    dropout: 0.5
+    bidirectional: false
+  train:
+    batch_size: 64
+    lr: 0.0003
+    weight_decay: 0.01
+    max_epochs: 40
+    patience: 6
+    aug_noise_std: 0.3            # standardised units
+    aug_channel_dropout: 0.2      # fraction of electrodes zeroed per training sequence
+    device: cpu
+
+shap:
+  n_background: 64                # background sequences from training subjects
+  windows_per_subject: 5          # sequences explained per test subject
+  nsamples: 100
+
+evaluation:
+  top_k_channels: [1, 3, 5]
+  top_k_time_bins: [1, 2, 3]      # one bin = one 2 s window
+  n_random_masks: 10              # random-masking control
+  stability_repeats: 5
+  stability_noise_std: 0.1
+  stability_max_windows: 40       # stability re-runs the explainer, so subsample
+  concordance_top_k: 3
+
+# Planted-signal check: random labels, extra alpha at one electrode for label-1 subjects
+synthetic:
+  electrode: F3
+  strength: 1.0                   # added alpha power as a multiple of the electrode's own
+  label_seed: 7
