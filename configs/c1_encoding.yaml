@@ -1,0 +1,101 @@
+# Component 1 — EEG-to-Spike Encoding (owner: Rathnayake M.N.M)
+
+encoder:
+  method: adaptive_tbr            # per-subject, per-channel TBR thresholds; baseline: FixedThresholdEncoder
+  baseline_sec: 120               # read by preprocessing (capped at the calibration duration)
+  polarity_mode: dual_binary      # contract boundary representation [B, T, 2C]
+
+decoder:
+  # Fidelity-check decoder only (the SNN never decodes). A leak matched to the
+  # band-pass corner removes the random-walk drift of standard TBR decoding.
+  # null = standard non-leaky TBR decoding.
+  leak_cutoff_hz: 1.0
+
+calibration:
+  include_mean: true              # theta_c = mean(diff_c) + k * std(diff_c), per subject and channel
+  k_candidates: [0.05, 0.1, 0.2, 0.3, 0.5, 1.0, 1.5, 2.0, 3.0]
+  # median_subject_snr_db: highest median calibration SNR.
+  # sparsest_within_snr_tolerance: fewest spikes among k within snr_tolerance_db of the best SNR.
+  selection_metric: sparsest_within_snr_tolerance
+  snr_tolerance_db: 0.5
+  minimum_threshold: 1.0e-6       # same units as the preprocessed EEG
+  minimum_signal_std: 1.0e-8
+  minimum_derivative_std: 1.0e-8
+  report_subject_count: 3
+  index_check_subject_count: 2
+  output_subdirectory: calibration
+  channel_regions:
+    anterior_y_min_m: 0.025
+    posterior_y_max_m: -0.025
+
+encoding_demo:
+  subject_id: "02010002"
+  channel_indices: [0, 1, 2]
+  overlay_seconds: 5.0
+  contiguous_windows_for_overlay: 3
+
+step_forward:
+  k_candidates: [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]
+  minimum_threshold: 1.0e-8
+  matched_spike_density: 0.1
+
+diagnostics:
+  subject_count: 5
+  mdd_subject_count: 3
+  hc_subject_count: 2
+  samples_per_position_region: 50
+  error_plot_window_count: 3
+  error_plot_channel_index: 0
+  reanchoring_intervals: [50, 100]
+  side_information_bits_per_sample: 32
+  sine:
+    sampling_rate_hz: 250.0
+    frequency_hz: 10.0
+    amplitude: 1.0
+    duration_sec: 2.0
+    threshold: 0.001
+  unnormalized_variant_subdirectory: modma_preprocessed_unnormalized
+
+fidelity:
+  # Encode -> decode -> compare on every subject's EVALUATION windows (thresholds
+  # from calibration profiles). Waveform metrics plus depression-relevant features.
+  output_subdirectory: fidelity
+  welch_segment_sec: 1.0          # 1 Hz PSD resolution, 50% overlap inside each 2 s window
+  bands:                          # [low, high) Hz, within the 0.5-45 Hz band-pass
+    delta: [0.5, 4.0]
+    theta: [4.0, 8.0]
+    alpha: [8.0, 13.0]
+    beta: [13.0, 30.0]
+    gamma: [30.0, 45.0]
+  asymmetry_pairs:                # [left, right]: HydroCel electrodes nearest the 10-20 sites
+    F3_F4: [E24, E124]
+    F7_F8: [E33, E122]
+  thresholds:                     # null = report only; set after reviewing the cohort report
+    min_correlation: null
+    max_band_power_abs_error_db: null
+  classifier:                     # sanity check only: logistic regression, 3 classes, shared folds.json
+    regularization_c: 1.0
+    max_iter: 2000
+
+preprocessing:
+  # Fixed in code (data/preprocessing.py → prepare_subject_windows), not configurable:
+  # row 129 (Cz/E129) is dropped, bad channels are interpolated (never removed), CAR over
+  # E1-E128, no ICA (MODMA has no EOG channels). Split fraction: common.yaml → split.
+  montage: GSN-HydroCel-128
+  channels_to_drop: []            # must stay empty: all 128 scalp channels are kept
+  detrend: linear
+  filter_padding_sec: 2.0
+  notch:
+    enabled: true
+    frequency_hz: 50.0
+    quality_factor: 30.0
+  artifact:
+    flat_std_threshold: 1.0e-12   # bad-channel detection, calibration only
+    max_std_ratio: 10.0
+    variance_mad_multiplier: 10.0
+    peak_to_peak_mad_multiplier: 10.0   # window rejection limit fitted on calibration windows
+  amplitude_scaling:
+    method: zscore                # calibration-only; use microvolts only with verified conversion metadata
+    epsilon: 1.0e-8
+  channel_selection:
+    keep_names: null              # null = all E1-E128 (the only accepted setting)

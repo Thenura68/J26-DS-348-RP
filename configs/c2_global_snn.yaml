@@ -1,46 +1,15 @@
-# Component 2 — General Spiking Neural Network Engine (owner: Wickramaarachchi W.A.R.J - IT23244498)
+# Component 2 — Global SNN Model (owner: Wickramaarachchi W.A.R.J)
 
 backbone:
-  neuron: alif                    
-  reservoir_size: 256
-  out_features: 256              
-  n_classes: 2                    
-  dt_ms: 4.0                      
-  spectral_radius: 0.95
-  gamma: 10.0                     # SuperSpike sharpness parameter
-
-  # ALIF dynamics
-  tau_ad_ms: 500.0
-  beta_ad_init: 0.5
-
-  # Homeostatic Intrinsic Plasticity 
-  intrinsic_plasticity:
-    enabled: true
-    target_hz_min: 10.0
-    target_hz_max: 35.0
-    eta_ip: 0.005
-
-  # Unsupervised STDP layer 
-  stdp:
-    enabled: true
-    tau_pre_ms: 20.0
-    tau_post_ms: 20.0
-    a_plus: 0.01
-    a_minus: 0.012
-    lr_stdp: 0.005
-    lateral_inhibition: 0.5
+  neuron: lif
+  out_features: 256               # fixed by the interface contract
+  reservoir_size: null            # to be decided
+  intrinsic_plasticity: true
+  stdp: true
 
 training:
-  surrogate: superspike
-  epochs: 30
-  lr: 0.001
-  weight_decay: 1.0e-4
-  batch_size: 16
-  seed: 42
-
-mumtaz:
-  condition: EC                   # Resting-state Eyes Closed 
-  window_sec: 2.0
-  n_splits: 5
-  seed: 42
-  datasets: [mumtaz, modma, tdbrain]
+  method: surrogate_gradient
+  surrogate: atan
+  max_epochs: null
+  lr: null
+  datasets: [modma]               # later: mumtaz, tdbrain
