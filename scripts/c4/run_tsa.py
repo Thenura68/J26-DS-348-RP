@@ -1,13 +1,15 @@
 """TSA on MODMA: practice STDP SNN, subject-wise CV, explanation metrics and planted-signal check.
 
-Pipeline (C1 and C2 are still stubs, so their C4 stand-ins are used):
-    C1 preprocessed windows → temporary_encoder (adaptive delta, ON/OFF) → PracticeBackbone (STDP)
-    → PracticeReadout (HC/MDD) → TemporalSpikeAttribution in 4 versions (S/NS × paper/leak_matched)
+Pipeline (C2 is still a stub, so the C4 practice SNN stands in for the global model):
+    C1 preprocessed windows → encoder (--encoder c1: C1's adaptive TBR, 250 Hz [default];
+    temporary: C4's delta encoder, 125 Hz) → PracticeBackbone (STDP) → PracticeReadout (HC/MDD)
+    → TemporalSpikeAttribution in 4 versions (S/NS × paper/leak_matched)
 
-    python scripts/c4/run_tsa.py --name real
-    python scripts/c4/run_tsa.py --name planted_F3 --plant F3
-    python scripts/c4/run_tsa.py --name control --plant F3 --strength 0
-    python scripts/c4/run_tsa.py --name planted_F3_all --plant F3 --plant-where all
+    python scripts/c4/run_tsa.py --name real_c1
+    python scripts/c4/run_tsa.py --name planted_F3_c1 --plant F3
+    python scripts/c4/run_tsa.py --name control_c1 --plant F3 --strength 0
+    python scripts/c4/run_tsa.py --name planted_F3_all_c1 --plant F3 --plant-where all
+    python scripts/c4/run_tsa.py --name real_temporary --encoder temporary
 
 Planted mode: real labels are replaced by a random permutation (no real signal left) and a
 9-11 Hz alpha wave is added at one electrode for every subject labelled 1, so the correct
@@ -32,6 +34,10 @@ from scipy.stats import wilcoxon
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 from tqdm import tqdm
 
+from snn_depression.c1_encoding.calibration import ThresholdSettings
+from snn_depression.c1_encoding.calibration import fit_thresholds as c1_fit_thresholds
+from snn_depression.c1_encoding.encoder import AdaptiveThresholdEncoder
+from snn_depression.c4_xai import temporary_encoder
 from snn_depression.c4_xai.aggregate import channel_scores, time_scores
 from snn_depression.c4_xai.baseline.features import feature_spec, subject_folds
 from snn_depression.c4_xai.baseline.utils import apply_overrides
@@ -39,7 +45,6 @@ from snn_depression.c4_xai.metrics import frontal_concordance, masking_curves
 from snn_depression.c4_xai.montage import channel_index, region_channels
 from snn_depression.c4_xai.practice_snn import PracticeBackbone, PracticeReadout
 from snn_depression.c4_xai.scalp_map import plot_scalp_map, plot_timeline, plot_top_channels
-from snn_depression.c4_xai.temporary_encoder import downsample, encode, fit_thresholds
 from snn_depression.c4_xai.tsa import TemporalSpikeAttribution
 from snn_depression.common.config import load_config
 from snn_depression.common.paths import INTERIM_DIR, component_output_dir
@@ -47,9 +52,9 @@ from snn_depression.common.seed import set_seed
 
 C1_DIR = INTERIM_DIR / "modma_preprocessed"
 FS = 250.0
-DOWNSAMPLE = 2
-STEP_S = DOWNSAMPLE / FS                 # one SNN time step = 8 ms
-TIME_BIN = 25                            # time-masking unit: 25 steps = 0.2 s
+DOWNSAMPLE = {"c1": 1, "temporary": 2}       # C1 encodes at 250 Hz, the temporary encoder at 125 Hz
+DEFAULT_K = {"c1": 1.0, "temporary": 2.0}    # C1's selected k (c1_encoding README, 2026-10-16)
+BIN_S = 0.2                                  # timeline / time-masking unit in seconds
 VERSIONS = [("s", "paper"), ("s", "leak_matched"), ("ns", "paper"), ("ns", "leak_matched")]
 MAIN_VERSION = ("ns", "leak_matched")    # used for the per-subject figures
 
@@ -66,7 +71,20 @@ def plant_alpha(windows: np.ndarray, ch: int, rms: float, rng: np.random.Generat
     return out
 
 
-def load_subjects(spec, args, label_seed: int, k: float) -> tuple[dict, np.ndarray, np.ndarray]:
+def make_encoder(kind: str, sid: str, cal: np.ndarray, k: float, names: list[str],
+                 c1_settings: ThresholdSettings):
+    """Fit one subject's encoder on its calibration windows [N, C, S] only (patient-adaptive).
+    Returns a function: EEG windows [N, C, S] at 250 Hz → spikes [N, T, 2C] (contract order)."""
+    if kind == "c1":
+        thr = c1_fit_thresholds(cal, k, c1_settings)
+        enc = AdaptiveThresholdEncoder(thr, channel_names=names, subject_id=sid)
+        return lambda eeg: enc.encode(torch.as_tensor(np.asarray(eeg), dtype=torch.float32))
+    thr = temporary_encoder.fit_thresholds(temporary_encoder.downsample(cal, 2), k)
+    return lambda eeg: temporary_encoder.encode(temporary_encoder.downsample(np.asarray(eeg), 2), thr)
+
+
+def load_subjects(spec, args, label_seed: int, k: float,
+                  c1_settings: ThresholdSettings) -> tuple[dict, np.ndarray, np.ndarray]:
     """Encode every subject's evaluation windows. Returns ({id: data}, ids, labels)."""
     meta = pd.read_csv(C1_DIR / "metadata.csv", dtype={"subject_id": str})
     ids = meta.subject_id.to_numpy()
@@ -84,9 +102,9 @@ def load_subjects(spec, args, label_seed: int, k: float) -> tuple[dict, np.ndarr
             ev = plant_alpha(ev, plant_ch, rms, rng)
             if args.plant_where == "all":
                 cal = plant_alpha(cal, plant_ch, rms, rng)
-        thr = fit_thresholds(downsample(cal, DOWNSAMPLE), k)
-        eeg = downsample(ev, DOWNSAMPLE).astype(np.float32)          # kept for stability re-encoding
-        data[sid] = {"eeg": eeg, "thr": thr, "spikes": encode(eeg, thr), "label": int(y)}
+        enc = make_encoder(args.encoder, sid, cal, k, spec.channel_names, c1_settings)
+        ev = ev.astype(np.float32)                                    # kept for stability re-encoding
+        data[sid] = {"eeg": ev, "enc": enc, "spikes": enc(ev), "label": int(y)}
     return data, ids, labels
 
 
@@ -127,16 +145,17 @@ def train_fold(data: dict, train_ids, epochs: int, seed: int):
     return bb, ro
 
 
-def example_figure(attr: np.ndarray, names: list[str], header: str):
+def example_figure(attr: np.ndarray, names: list[str], header: str, time_bin: int, step_s: float):
     """One explained window, attr [C, T] for the predicted class: size map, signed map
-    (red = for the prediction, blue = against), top electrodes, timeline in 0.2 s bins."""
+    (red = for the prediction, blue = against), top electrodes, timeline in bins of
+    ``time_bin`` steps of ``step_s`` seconds."""
     fig, axes = plt.subplots(1, 4, figsize=(22, 4.8))
     plot_scalp_map(channel_scores(attr, "abs"), names, "Size of attribution", ax=axes[0])
     plot_scalp_map(channel_scores(attr, "signed"), names, "Evidence for (+) / against (−) prediction",
                    ax=axes[1], signed=True)
     plot_top_channels(channel_scores(attr, "signed"), names, axes[2],
                       title="Top electrodes (net evidence for prediction)")
-    plot_timeline(time_scores(attr, TIME_BIN, "abs"), TIME_BIN * STEP_S, axes[3])
+    plot_timeline(time_scores(attr, time_bin, "abs"), time_bin * step_s, axes[3])
     fig.suptitle(header)
     fig.tight_layout()
     return fig
@@ -144,13 +163,13 @@ def example_figure(attr: np.ndarray, names: list[str], header: str):
 
 # ── explanation metrics ──────────────────────────────────────────────────────────────
 
-def tsa_stability(tsa: TemporalSpikeAttribution, eeg: np.ndarray, thr: np.ndarray, target: int,
+def tsa_stability(tsa: TemporalSpikeAttribution, eeg: np.ndarray, enc, target: int,
                   repeats: int, noise_std: float, rng: np.random.Generator) -> float:
-    """Noise is added to the EEG (spikes must stay 0/1), then re-encoded and re-explained.
-    Mean correlation of electrode scores with the clean window's."""
+    """Noise is added to the EEG (spikes must stay 0/1), then re-encoded with the subject's own
+    encoder ``enc`` and re-explained. Mean correlation of electrode scores with the clean window's."""
     batch = np.stack([eeg] + [eeg + rng.normal(0, noise_std, eeg.shape).astype(np.float32)
                               for _ in range(repeats)])
-    attr = tsa.attribute(encode(batch, thr))[:, target].numpy()          # [R+1, C, T]
+    attr = tsa.attribute(enc(batch))[:, target].numpy()                  # [R+1, C, T]
     ref = channel_scores(attr[0], "signed")
     return float(np.mean([np.corrcoef(ref, channel_scores(a, "signed"))[0, 1] for a in attr[1:]]))
 
@@ -186,7 +205,10 @@ def main() -> None:
     ap.add_argument("--plant", default=None, help="electrode for the planted alpha, e.g. F3")
     ap.add_argument("--strength", type=float, default=1.0, help="planted alpha RMS ÷ electrode SD")
     ap.add_argument("--plant-where", choices=["eval", "all"], default="eval")
-    ap.add_argument("--k", type=float, default=2.0, help="encoder threshold multiplier")
+    ap.add_argument("--encoder", choices=["c1", "temporary"], default="c1",
+                    help="c1 = C1's adaptive TBR (250 Hz); temporary = C4's delta encoder (125 Hz)")
+    ap.add_argument("--k", type=float, default=None,
+                    help="encoder threshold multiplier (default: 1.0 for c1, 2.0 for temporary)")
     ap.add_argument("--epochs", type=int, default=1, help="STDP passes over the training windows")
     ap.add_argument("--stability-windows", type=int, default=2, help="per test subject")
     ap.add_argument("--config", default="c4_xai")
@@ -203,8 +225,12 @@ def main() -> None:
     out_dir = component_output_dir("c4") / "tsa" / args.name
     (out_dir / "figures").mkdir(parents=True, exist_ok=True)
     t_start = time.time()
+    k = args.k if args.k is not None else DEFAULT_K[args.encoder]
+    step_s = DOWNSAMPLE[args.encoder] / FS                # one SNN time step: 4 ms (c1) or 8 ms
+    time_bin = round(BIN_S / step_s)                     # 0.2 s: 50 steps (c1) or 25 steps
+    c1_settings = ThresholdSettings.from_config(load_config("c1_encoding")["calibration"])
 
-    data, ids, labels = load_subjects(spec, args, cfg["synthetic"]["label_seed"], args.k)
+    data, ids, labels = load_subjects(spec, args, cfg["synthetic"]["label_seed"], k, c1_settings)
     folds = subject_folds(ids, labels, cfg["baseline"]["n_folds"], cfg["baseline"]["val_fraction"], seed)
 
     preds, masking, per_window = [], [], []
@@ -233,13 +259,13 @@ def main() -> None:
                               "window": int(i), "label": d["label"], "target": int(t)}
                     x_int, a_int = to_interleaved(x[j].numpy()), np.repeat(a / 2, 2, axis=0)
                     for unit, ks, bin_len in (("channel", ec["top_k_channels"], 1),
-                                              ("time", ec["top_k_time_bins"], TIME_BIN)):
+                                              ("time", ec["top_k_time_bins"], time_bin)):
                         for row in masking_curves(predict_int, x_int, a_int, int(t), ks, unit,
                                                   bin_len, 2, ec["n_random_masks"], rng):
                             masking.append({**common, **row})
                     w = {**common, **frontal_concordance(a, frontal, 1, ec["concordance_top_k"])}
                     if j < args.stability_windows:
-                        w["stability"] = tsa_stability(tsa, d["eeg"][i], d["thr"], int(t),
+                        w["stability"] = tsa_stability(tsa, d["eeg"][i], d["enc"], int(t),
                                                        ec["stability_repeats"], ec["stability_noise_std"], rng)
                     per_window.append(w)
 
@@ -247,8 +273,9 @@ def main() -> None:
             if not example_done and d["label"] == 1 and (targets == 1).any():
                 j = int(np.argmax(targets == 1))
                 a = tsas[MAIN_VERSION].attribute(x[j:j + 1])[0, 1].numpy()
-                fig = example_figure(a, names, f"TSA-NS leak-matched · subject {sid} · window "
-                                     f"{idx[j]} · label 1 · predicted 1 · fold {f['fold']}")
+                fig = example_figure(a, names, f"TSA-NS leak-matched · {args.encoder} encoder · subject "
+                                     f"{sid} · window {idx[j]} · label 1 · predicted 1 · fold {f['fold']}",
+                                     time_bin, step_s)
                 fig.savefig(out_dir / "figures" / f"subject_{sid}.png", dpi=120)
                 plt.close(fig)
                 example_done = True
@@ -292,7 +319,7 @@ def main() -> None:
                 order = list(np.argsort(-pos))
                 planted[f"{v[0]}_{v[1]}"][mode] = {"rank_of_planted": order.index(target) + 1,
                                                    "top3": [names[i] for i in order[:3]]}
-    fig.suptitle(f"{args.name}: TSA attribution for class 1 over test windows")
+    fig.suptitle(f"{args.name} ({args.encoder} encoder): TSA attribution for class 1 over test windows")
     fig.tight_layout()
     fig.savefig(out_dir / "figures" / "group_scalp_maps.png", dpi=120)
     plt.close(fig)
@@ -303,7 +330,7 @@ def main() -> None:
         json.dump(planted, open(out_dir / "planted.json", "w"), indent=2, default=float)
 
     # report
-    print(f"\n=== {args.name} ({(time.time() - t_start) / 60:.1f} min) ===")
+    print(f"\n=== {args.name} · {args.encoder} encoder, k={k} ({(time.time() - t_start) / 60:.1f} min) ===")
     print("model:", json.dumps(cv, default=lambda v: round(float(v), 3)))
     for s in summary:
         ch3 = next(r for r in s["masking"] if r["unit"] == "channel" and r["k"] == 3)
