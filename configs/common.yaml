@@ -1,0 +1,34 @@
+# Shared settings for all components. Change only via a "shared:" pull request.
+
+project:
+  id: J26-DS-348
+  seed: 42
+
+data:
+  dataset: modma
+  montage: eeg_128ch_resting      # or eeg_3ch_resting (wearable frontal subset) — open decision
+  sampling_rate_hz: 250           # verify against the MODMA files
+  bandpass_hz: [0.5, 45.0]
+  filter_order: 4
+  window_sec: 2.0                 # open decision: 2 s vs 10 s windows
+  window_overlap: 0.0
+
+contract:                         # mirrors src/snn_depression/common/contracts.py
+  feature_dim: 256
+  n_classes: 3
+  class_names: [non_depressed, moderate, severe]
+
+labels:
+  scheme: phq9
+  phq9_bins:                      # inclusive ranges; PHQ-9 cut-offs 10 and 20 (Kroenke et al., 2001)
+    non_depressed: [0, 9]         # MODMA: all 29 HC (PHQ-9 0-5)
+    moderate: [10, 19]            # MODMA: 16 MDD (moderate + moderately severe)
+    severe: [20, 27]              # MODMA: 8 MDD
+
+split:
+  strategy: stratified_subject_kfold   # or leave_one_subject_out
+  n_splits: 5
+  n_repeats: 5                    # repeated with seeds seed, seed+1, ...
+  seed: 42
+  stratify_on: severity_target    # one label per subject; subjects (not windows) are split
+  calibration_fraction: 0.2       # first 20% of each test subject's recording (chronological)
