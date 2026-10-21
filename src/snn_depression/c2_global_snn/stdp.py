@@ -52,7 +52,6 @@ class STDPLayer(nn.Module):
 
     @torch.no_grad()
     def normalize_weights(self) -> None:
-        """Keep weights within [w_min, w_max] and normalize L1 norm per neuron."""
         self.weight.clamp_(min=self.w_min, max=self.w_max)
         row_sums = self.weight.sum(dim=1, keepdim=True).clamp_(min=1e-6)
         target_sum = max(1.0, 0.25 * self.in_features)
@@ -93,7 +92,7 @@ class STDPLayer(nn.Module):
         # Update post-synaptic trace
         x_post_next = self.alpha_post * x_post + s_post
 
-        # Apply local STDP update under no_grad if enabled
+        # Apply local STDP update 
         if learn and self.training:
             with torch.no_grad():
                 dw_ltp = torch.bmm(s_post.unsqueeze(2), x_pre_next.unsqueeze(1)).sum(dim=0)
