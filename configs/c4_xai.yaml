@@ -1,0 +1,13 @@
+# Component 4 — Explainable AI / Temporal Spike Attribution (owner: Edirisinghe M.R)
+
+tsa:
+  timing_decay_tau: null          # spike-timing decay constant — to be decided
+  combine: [timing, weight, confidence]
+
+faithfulness:
+  mask_top_k_channels: 10
+  min_confidence_drop: null       # the "≥X%" target from the proposal
+
+visualization:
+  montage: standard_1020
+  backend: mne
