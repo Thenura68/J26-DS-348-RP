@@ -39,6 +39,41 @@ step_forward:
   minimum_threshold: 1.0e-8
   matched_spike_density: 0.1
 
+bsa:
+  # Baseline: Ben's Spiker Algorithm (c1_encoding/bsa.py). Per-subject, per-channel scale
+  # from calibration windows only; positive/negative parts encoded separately -> [B, T, 2C].
+  scale_percentile: 99.0          # scale_c = 99th percentile of |x| in the calibration windows
+  minimum_scale: 1.0e-6
+  filter_lengths: [15, 25]        # FIR taps (Hamming-windowed sinc, unit DC gain)
+  cutoffs_hz: [20.0, 30.0, 44.0]  # below the 45 Hz band-pass edge
+  thresholds: [0.0, 0.05, 0.1, 0.2]
+  selection_metric: sparsest_within_snr_tolerance   # same rule as the TBR k sweep
+  snr_tolerance_db: 0.5
+
+comparison:
+  # scripts/c1_compare_encoders.py: TBR (main) vs AER, Step-Forward and BSA on the same data.
+  # Every method is tuned on calibration windows only with calibration.selection_metric /
+  # snr_tolerance_db; TBR uses calibration.k_candidates and BSA uses the bsa: grids.
+  output_subdirectory: encoder_comparison
+  methods: [tbr, aer, step_forward, bsa]
+  aer_thresholds: [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 1.0]  # one fixed theta for all
+  step_forward_k: [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5]              # theta_c = k_sf * std(x)
+  matched_density_targets: [0.15, 0.30]   # also compare every method at these spike densities
+  decision:                               # fixed before running (pre-registered)
+    density_target: 0.30                  # compare methods at this matched density
+    feature_rho_tie_margin: 0.02          # within this of the best feature Spearman = tied
+                                          # ties -> lowest ops/sample -> lowest density CV -> highest SNR
+
+calibration_length:
+  # scripts/c1_calibration_length.py: how many seconds of calibration TBR needs.
+  # Uses the first N clean calibration windows (2 s each, chronological); k fixed at 1.0.
+  output_subdirectory: calibration_length
+  seconds: [10, 20, 30, 45, 60]
+  k: 1.0
+  convergence:                    # "converged" = first length meeting both conditions
+    max_median_theta_change: 0.05 # median |theta_L - theta_full| / theta_full across subjects
+    max_snr_drop_db: 0.1          # evaluation SNR within this of the full-calibration SNR
+
 diagnostics:
   subject_count: 5
   mdd_subject_count: 3
