@@ -357,3 +357,44 @@ channels, artifacts) and the EEG arrays are unchanged.
 - A `shared:` PR to `main` for the shared files.
 - C3: the `c3_adapter/adapter.py` docstring still lists `mild, moderate, severe`.
 - C4: still uses 2 classes (HC/MDD) and needs to move to the 3 classes.
+
+## 2026-10-21 — BSA (Ben's Spiker Algorithm) baseline
+
+TBR stays the main encoder; `encoder.py`, `calibration.py` and `decoder.py` are
+unchanged. BSA is a comparison baseline in its own file, `bsa.py`, like `step_forward.py`.
+
+- Implemented BSA (Schrauwen & Van Campenhout, 2003): greedy placement of copies of a
+  low-pass FIR filter; spike if `sum|s - h| <= sum|s| - threshold`; decoding is
+  convolution with the same filter.
+- Filter: Hamming-windowed sinc, cutoff in Hz, normalised to unit DC gain.
+- Patient-adaptive and leakage-safe: per-channel scale = 99th percentile of |x| in the
+  subject's calibration windows only (`fit_bsa_profile`). Evaluation windows are never
+  rescaled with their own min/max.
+- Positive and negative parts are encoded separately and clipped to [0, 1], so no spikes
+  are spent on an offset, and the output keeps the contract layout [B, T, 2C]
+  (POS channels then NEG channels).
+- `sweep_bsa_settings` chooses filter length, cutoff and threshold on calibration data
+  with the same selection rule as the TBR k sweep.
+- Vectorised over windows and channels, with a time-major loop: about 4 s per subject's
+  111 evaluation windows, identical to the literal per-channel loop.
+- Reviewed a NeuCube-style Python BSA port. Its core loop and filter maths are correct,
+  but it normalised each signal with its own min/max (leakage and loss of amplitude),
+  had no decoder, padded the start in a way that biases reconstruction, did not
+  normalise the filter, and was too slow for this dataset.
+- Added `tests/c1/test_bsa.py` (11 tests, including equality with the literal reference
+  loop) and a `bsa:` section in `configs/c1_encoding.yaml`.
+
+## 2026-10-22 — Calibration-length experiment
+
+- Added `scripts/c1_calibration_length.py` and a `calibration_length:` config section.
+  Thresholds (k = 1.0) are fitted on only the first 10/20/30/45/60 s of clean calibration
+  windows and used to encode the evaluation windows (last 80%) of all 53 subjects.
+- Threshold change compared with the full calibration (about 58 s): 5.8% at 10 s, 4.1% at
+  20 s, 3.3% at 30 s, 1.8% at 44 s. It meets the 5% rule from 20 s.
+- Threshold change compared with the long-run value from the evaluation part (analysis
+  reference only): 11.0% at 10 s, then a plateau of about 8% from 30 s onwards. More
+  calibration does not close this gap, because it comes from the signal changing over the
+  recording, not from too little calibration data.
+- Encoding quality on the evaluation windows hardly changes with length: SNR 1.90–1.94 dB,
+  correlation 0.600–0.607, feature Spearman 0.947–0.960, density CV 0.22–0.24.
+- Result: calibration converges by 20 s; the 20% split (about 60 s) gives about a 3× margin.
