@@ -398,3 +398,28 @@ unchanged. BSA is a comparison baseline in its own file, `bsa.py`, like `step_fo
 - Encoding quality on the evaluation windows hardly changes with length: SNR 1.90–1.94 dB,
   correlation 0.600–0.607, feature Spearman 0.947–0.960, density CV 0.22–0.24.
 - Result: calibration converges by 20 s; the 20% split (about 60 s) gives about a 3× margin.
+
+## 2026-10-23 — Whole-recording handover to C2
+
+- Found during a check of the three C1 steps: the saved profiles in
+  `outputs/c1/calibration/profiles/` were still the 10 October k = 0.5 versions, and no
+  function encoded a patient's whole recording (the usage note defaulted to the
+  evaluation part only).
+- Re-ran `scripts/c1_calibrate.py`: all 53 profiles now use k = 1.0.
+- Added `c1_encoding/handover.py`:
+  - `encode_recording(subject_id)` encodes the whole recording (calibration followed
+    by evaluation windows) with the thresholds fitted on the first 20%;
+  - `save_recording_spikes` and `load_exported_spikes` handle the saved files;
+  - each result carries `n_calibration_windows` (the 20%/80% boundary);
+  - a stale profile, whose calibration window count differs from the data, is rejected.
+- Added `scripts/c1_export_spikes.py`. It writes `outputs/c1/spikes/<id>.npz` (uint8
+  spikes, boundary, k) and `spikes_manifest.json` for all 53 subjects: 7555 windows, 84 MB.
+- Verified on all 53 subjects:
+  - the split is the first 20% of the raw recording;
+  - calibration windows lie inside it;
+  - whole-recording encoding equals part-wise encoding;
+  - the contract holds;
+  - saved files equal a fresh encoding;
+  - boundaries match the manifest.
+- Updated `USAGE_FOR_C2.md` to load the whole recording and to explain the boundary.
+  Added `tests/c1/test_handover.py` (5 tests).
