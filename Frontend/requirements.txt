@@ -1,0 +1,3 @@
+# Dashboard only (install on top of the project requirements):
+#   pip install -r requirements.txt && pip install -e . && pip install -r Frontend/requirements.txt
+streamlit>=1.40,<2
