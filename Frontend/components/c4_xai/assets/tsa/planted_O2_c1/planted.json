@@ -1,0 +1,81 @@
+{
+  "electrode": "O2",
+  "strength": 1.0,
+  "where": "eval",
+  "s_paper": {
+    "abs": {
+      "rank_of_planted": 2,
+      "top3": [
+        "E11",
+        "E83",
+        "E70"
+      ]
+    },
+    "signed": {
+      "rank_of_planted": 1,
+      "top3": [
+        "E83",
+        "E124",
+        "E62"
+      ]
+    }
+  },
+  "s_leak_matched": {
+    "abs": {
+      "rank_of_planted": 2,
+      "top3": [
+        "E11",
+        "E83",
+        "E70"
+      ]
+    },
+    "signed": {
+      "rank_of_planted": 1,
+      "top3": [
+        "E83",
+        "E62",
+        "E24"
+      ]
+    }
+  },
+  "ns_paper": {
+    "abs": {
+      "rank_of_planted": 2,
+      "top3": [
+        "E11",
+        "E83",
+        "E70"
+      ]
+    },
+    "signed": {
+      "rank_of_planted": 1,
+      "top3": [
+        "E83",
+        "E124",
+        "E62"
+      ]
+    }
+  },
+  "ns_leak_matched": {
+    "abs": {
+      "rank_of_planted": 2,
+      "top3": [
+        "E11",
+        "E83",
+        "E70"
+      ]
+    },
+    "signed": {
+      "rank_of_planted": 1,
+      "top3": [
+        "E83",
+        "E62",
+        "E24"
+      ]
+    }
+  },
+  "planted_electrode_spike_rate": {
+    "label_0": 0.1372716651651366,
+    "label_1": 0.21245734533295035
+  }
+}
