@@ -23,6 +23,7 @@ import numpy as np
 import torch
 from scipy.integrate import trapezoid
 from scipy.signal import welch
+from scipy.stats import spearmanr
 from torch import Tensor
 
 Bands = Mapping[str, Sequence[float]]
@@ -257,3 +258,67 @@ def cohens_d(group_a: Sequence[float], group_b: Sequence[float]) -> float:
         a.size + b.size - 2
     )
     return float((a.mean() - b.mean()) / math.sqrt(pooled)) if pooled > 0 else math.nan
+
+
+def subject_spectral_features(
+    powers: np.ndarray,
+    channel_names: Sequence[str],
+    band_names: Sequence[str],
+    regions: Mapping[str, Sequence[str]],
+    asymmetry_pairs: Mapping[str, Sequence[str]],
+) -> dict[str, float]:
+    """Per-subject features from band powers [C, n_bands]: regional relative power and FAA.
+
+    Returns ``{region}_{band}_rel`` (mean relative band power over the region's
+    channels) and ``faa_{pair}`` (ln alpha_right - ln alpha_left) for each pair.
+    """
+    relative = relative_band_powers(powers)
+    index = {name: i for i, name in enumerate(channel_names)}
+    features: dict[str, float] = {}
+    for region, members in regions.items():
+        rows = [index[name] for name in members]
+        for band_index, band in enumerate(band_names):
+            features[f"{region}_{band}_rel"] = float(relative[rows, band_index].mean())
+    alpha = list(band_names).index("alpha")
+    for pair, (left, right) in asymmetry_pairs.items():
+        features[f"faa_{pair}"] = frontal_alpha_asymmetry(powers[:, alpha], channel_names, left, right)
+    return features
+
+
+def spearman(a: Sequence[float], b: Sequence[float]) -> float:
+    """Spearman rank correlation over finite pairs; NaN if fewer than 3 or constant."""
+    x, y = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    keep = np.isfinite(x) & np.isfinite(y)
+    if keep.sum() < 3 or np.ptp(x[keep]) == 0 or np.ptp(y[keep]) == 0:
+        return math.nan
+    return float(spearmanr(x[keep], y[keep]).statistic)
+
+
+def feature_preservation(
+    subjects: Sequence[Mapping[str, Any]],
+    original: Sequence[Mapping[str, float]],
+    reconstructed: Sequence[Mapping[str, float]],
+) -> list[dict[str, Any]]:
+    """Compare each per-subject feature before and after encoding, across subjects.
+
+    ``subjects`` are manifest rows (``diagnosis_target``, ``phq9``). For each feature:
+    cross-subject Spearman (original vs reconstructed), MDD-vs-HC Cohen's d for both,
+    and Spearman with PHQ-9 for both.
+    """
+    is_mdd = np.array([s["diagnosis_target"] == 1 for s in subjects])
+    phq9 = [float(s["phq9"]) if s["phq9"] is not None else math.nan for s in subjects]
+    rows = []
+    for name in original[0]:
+        orig = np.array([f[name] for f in original])
+        rec = np.array([f[name] for f in reconstructed])
+        rows.append(
+            {
+                "feature": name,
+                "spearman_original_vs_reconstructed": spearman(orig, rec),
+                "cohens_d_mdd_vs_hc_original": cohens_d(orig[is_mdd], orig[~is_mdd]),
+                "cohens_d_mdd_vs_hc_reconstructed": cohens_d(rec[is_mdd], rec[~is_mdd]),
+                "spearman_phq9_original": spearman(orig, phq9),
+                "spearman_phq9_reconstructed": spearman(rec, phq9),
+            }
+        )
+    return rows
