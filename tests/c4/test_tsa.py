@@ -16,6 +16,7 @@ KEY, SILENT = 1, 2              # electrode wired to the output; electrode wired
 HC, MDD = 0, 1
 
 
+#Building the fake networks
 def hand_wired_net() -> tuple[PracticeBackbone, PracticeReadout]:
     """Electrodes KEY and SILENT (ON channels) → hidden neuron 0 → +MDD / −HC. Everything else 0."""
     bb = PracticeBackbone(n_inputs=2 * C_EEG)
