@@ -1,0 +1,17 @@
+[theme]
+base = "light"
+primaryColor = "#3b5bdb"
+font = "sans serif"
+
+[theme.sidebar]
+# Dark blue left panel with white text; the main area keeps the light theme above.
+backgroundColor = "#0b2545"
+secondaryBackgroundColor = "#13315c"
+textColor = "#ffffff"
+primaryColor = "#8fb3ff"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
