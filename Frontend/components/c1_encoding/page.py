@@ -15,7 +15,9 @@ import pandas as pd
 import streamlit as st
 
 from shared.data import load_csv, load_json, output_dir
-from shared.layout import STANDARD_SECTIONS, page_header, placeholder, show_image, show_table
+from components.c1_encoding.comparison_view import render_comparison_tab
+from components.c1_encoding.interactive import render_live_demo, render_output_tab
+from shared.layout import STANDARD_SECTIONS, page_header, placeholder, show_image
 
 KEY = "c1"
 
@@ -126,7 +128,9 @@ def _why_twenty_percent(results) -> None:
 def render() -> None:
     page_header(KEY)
     results = output_dir(KEY)
-    sub_problem, prototype, requirements, design = st.tabs(STANDARD_SECTIONS)
+    sub_problem, prototype, output, comparison, requirements, design = st.tabs(
+        [STANDARD_SECTIONS[0], STANDARD_SECTIONS[1], "Output for C2", "Encoder comparison", *STANDARD_SECTIONS[2:]]
+    )
 
     with sub_problem:
         _adaptation(results)
@@ -134,12 +138,17 @@ def render() -> None:
         _why_twenty_percent(results)
 
     with prototype:
-        st.subheader("Encoding demo")
+        render_live_demo()
+        st.divider()
+        st.header("Saved example")
         show_image(results / "encoding_demo" / "02010002_tbr_demo.png",
                    "Original vs decoded EEG and the UP/DOWN spike raster (scripts/c1_encode_demo.py)")
-        st.subheader("Encoder comparison")
-        show_table(load_csv(str(results / "encoder_comparison" / "summary.csv")),
-                   "Run `python scripts/c1_compare_encoders.py`.")
+
+    with output:
+        render_output_tab()
+
+    with comparison:
+        render_comparison_tab(results)
 
     with requirements:
         placeholder("the user requirements C1 meets.")

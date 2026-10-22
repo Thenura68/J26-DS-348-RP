@@ -38,4 +38,4 @@ def test_every_component_page_renders(module):
     app = AppTest.from_function(_render_page, args=(str(FRONTEND), module), default_timeout=60).run()
 
     assert not app.exception
-    assert len(app.tabs) == 4
+    assert len(app.tabs) >= 4  # the four standard tabs; a page may add its own
