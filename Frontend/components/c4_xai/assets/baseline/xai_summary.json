@@ -1,0 +1,97 @@
+{
+  "frontal_channels": [
+    "E24",
+    "E124"
+  ],
+  "masking": [
+    {
+      "unit": "channel",
+      "k": 1,
+      "n": 265,
+      "faithfulness": 0.020940213948504708,
+      "faithfulness_random": 0.002748000793096407,
+      "faithfulness_p": 1.41636239823034e-31,
+      "sufficiency": 0.9577315290019197,
+      "sufficiency_random": 0.9399546522014546,
+      "sufficiency_p": 7.264061420920445e-32
+    },
+    {
+      "unit": "channel",
+      "k": 3,
+      "n": 265,
+      "faithfulness": 0.049583642317843186,
+      "faithfulness_random": 0.008327494342700206,
+      "faithfulness_p": 2.459931668081704e-41,
+      "sufficiency": 0.9882370665388287,
+      "sufficiency_random": 0.9485439514214138,
+      "sufficiency_p": 1.740488895175794e-41
+    },
+    {
+      "unit": "channel",
+      "k": 5,
+      "n": 265,
+      "faithfulness": 0.06600587617219887,
+      "faithfulness_random": 0.016258265786004727,
+      "faithfulness_p": 1.5789262322089967e-41,
+      "sufficiency": 1.0083993767792323,
+      "sufficiency_random": 0.9560689195147101,
+      "sufficiency_p": 1.2867914466299069e-42
+    },
+    {
+      "unit": "time",
+      "k": 1,
+      "n": 265,
+      "faithfulness": 0.008200338091684795,
+      "faithfulness_random": 0.003952240838175642,
+      "faithfulness_p": 3.6473329553069647e-35,
+      "sufficiency": 0.9449145699447056,
+      "sufficiency_random": 0.9404275084441562,
+      "sufficiency_p": 4.616755917616549e-32
+    },
+    {
+      "unit": "time",
+      "k": 2,
+      "n": 265,
+      "faithfulness": 0.015315634993488135,
+      "faithfulness_random": 0.008010675813091199,
+      "faithfulness_p": 2.0598477499698913e-38,
+      "sufficiency": 0.952689702105972,
+      "sufficiency_random": 0.9447144006783108,
+      "sufficiency_p": 2.475259890425257e-35
+    },
+    {
+      "unit": "time",
+      "k": 3,
+      "n": 265,
+      "faithfulness": 0.02222289203046733,
+      "faithfulness_random": 0.01189809658673492,
+      "faithfulness_p": 1.5957080848917504e-40,
+      "sufficiency": 0.9600582019338068,
+      "sufficiency_random": 0.9492738615791753,
+      "sufficiency_p": 2.0174573957712256e-38
+    }
+  ],
+  "concordance": {
+    "predicted_class_0": {
+      "n": 70,
+      "mean_frontal_ratio": 0.9049990220434996,
+      "frac_frontal_ratio_gt_1": 0.24285714285714285,
+      "frac_frontal_in_top3": 0.11428571428571428
+    },
+    "predicted_class_1": {
+      "n": 195,
+      "mean_frontal_ratio": 0.8754922534838189,
+      "frac_frontal_ratio_gt_1": 0.28205128205128205,
+      "frac_frontal_in_top3": 0.23076923076923078
+    }
+  },
+  "stability": {
+    "n": 40,
+    "mean": 0.9841658408535249,
+    "frac_ge_0.7": 1.0
+  },
+  "consistency": {
+    "n_subjects": 53,
+    "mean": 0.8657635133221677
+  }
+}
