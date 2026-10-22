@@ -24,7 +24,6 @@ from typing import Any
 
 import numpy as np
 import torch
-from scipy.stats import spearmanr
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import balanced_accuracy_score, f1_score
 from sklearn.pipeline import make_pipeline
@@ -42,70 +41,14 @@ from snn_depression.c1_encoding.decoder import leak_from_cutoff, reconstruct
 from snn_depression.c1_encoding.encoder import AdaptiveThresholdEncoder, from_dual_binary
 from snn_depression.c1_encoding.fidelity import (
     band_powers,
-    cohens_d,
-    frontal_alpha_asymmetry,
+    feature_preservation,
     passes_thresholds,
-    relative_band_powers,
     signal_integrity,
     spectral_fidelity,
+    spearman,
     spike_density,
+    subject_spectral_features,
 )
-
-
-def _subject_features(
-    powers: np.ndarray,
-    channel_names: list[str],
-    band_names: list[str],
-    regions: dict[str, list[str]],
-    asymmetry_pairs: dict[str, list[str]],
-) -> dict[str, float]:
-    """Per-subject features: regional relative band power and frontal alpha asymmetry."""
-    relative = relative_band_powers(powers)
-    index = {name: i for i, name in enumerate(channel_names)}
-    features: dict[str, float] = {}
-    for region, members in regions.items():
-        rows = [index[name] for name in members]
-        for band_index, band in enumerate(band_names):
-            features[f"{region}_{band}_rel"] = float(relative[rows, band_index].mean())
-    alpha = band_names.index("alpha")
-    for pair, (left, right) in asymmetry_pairs.items():
-        features[f"faa_{pair}"] = frontal_alpha_asymmetry(
-            powers[:, alpha], channel_names, left, right
-        )
-    return features
-
-
-def _spearman(a: list[float], b: list[float]) -> float:
-    x, y = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
-    keep = np.isfinite(x) & np.isfinite(y)
-    if keep.sum() < 3 or np.ptp(x[keep]) == 0 or np.ptp(y[keep]) == 0:
-        return math.nan
-    return float(spearmanr(x[keep], y[keep]).statistic)
-
-
-def _feature_preservation(
-    subjects: list[dict[str, Any]],
-    original: list[dict[str, float]],
-    reconstructed: list[dict[str, float]],
-) -> list[dict[str, Any]]:
-    """Compare each feature's information content before and after encoding."""
-    is_mdd = np.array([s["diagnosis_target"] == 1 for s in subjects])
-    phq9 = [float(s["phq9"]) if s["phq9"] is not None else math.nan for s in subjects]
-    rows = []
-    for name in original[0]:
-        orig = np.array([f[name] for f in original])
-        rec = np.array([f[name] for f in reconstructed])
-        rows.append(
-            {
-                "feature": name,
-                "spearman_original_vs_reconstructed": _spearman(orig.tolist(), rec.tolist()),
-                "cohens_d_mdd_vs_hc_original": cohens_d(orig[is_mdd], orig[~is_mdd]),
-                "cohens_d_mdd_vs_hc_reconstructed": cohens_d(rec[is_mdd], rec[~is_mdd]),
-                "spearman_phq9_original": _spearman(orig.tolist(), phq9),
-                "spearman_phq9_reconstructed": _spearman(rec.tolist(), phq9),
-            }
-        )
-    return rows
 
 
 def _fold_classifier(
@@ -252,7 +195,7 @@ def run() -> None:
         subjects.append(row)
         for target, signal in ((original_features, eeg), (reconstructed_features, decoded)):
             target.append(
-                _subject_features(
+                subject_spectral_features(
                     band_powers(signal, fs, bands, segment_sec=segment_sec),
                     channel_names,
                     band_names,
@@ -265,7 +208,7 @@ def run() -> None:
             f"r={integrity['correlation']:.3f} density={session['spike_density']:.3f}"
         )
 
-    preservation = _feature_preservation(subjects, original_features, reconstructed_features)
+    preservation = feature_preservation(subjects, original_features, reconstructed_features)
     folds_file = json.loads((source_dir / "folds.json").read_text(encoding="utf-8"))
     label_key = str(folds_file.get("stratify_on", "severity_target"))
     if any(s.get(label_key) is None for s in subjects) or not folds_file["folds"]:
@@ -301,7 +244,7 @@ def run() -> None:
             + tuple(f"{b}_bias_db" for b in band_names)
         },
         "faa_spearman_original_vs_reconstructed": {
-            pair: _spearman(
+            pair: spearman(
                 [s[f"faa_{pair}_original"] for s in session_rows],
                 [s[f"faa_{pair}_reconstructed"] for s in session_rows],
             )
