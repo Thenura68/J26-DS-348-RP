@@ -74,6 +74,15 @@ calibration_length:
     max_median_theta_change: 0.05 # median |theta_L - theta_full| / theta_full across subjects
     max_snr_drop_db: 0.1          # evaluation SNR within this of the full-calibration SNR
 
+dashboard:
+  # scripts/c1_dashboard_figures.py: explanatory figures for the Frontend C1 page.
+  output_subdirectory: dashboard
+  subject_id: "02010002"          # patient shown in the split and step figures
+  comparison_subject_id: "02020008"   # second patient for the adaptation comparison
+  channel: E1
+  k: 1.0
+  zoom_seconds: 1.0               # length of the step-by-step close-up
+
 diagnostics:
   subject_count: 5
   mdd_subject_count: 3
