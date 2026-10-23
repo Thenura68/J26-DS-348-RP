@@ -218,6 +218,7 @@ class GlobalSNNBackbone(FeatureBackbone):
             "total_synops": total_synops,
             "synops_per_window": total_synops / float(batch_size) if batch_size > 0 else 0,
             "spike_sparsity": sparsity,
+            "sparsity": sparsity,
             "total_spikes": total_spikes_fired,
         }
 
@@ -250,10 +251,17 @@ class GlobalSNNBackbone(FeatureBackbone):
         preds = max_mems.masked_fill(~is_top, float("-inf")).argmax(dim=1)
 
         norm_counts = spike_counts + 0.1 * max_mems.clamp(min=0.0)
-        confidence_probs = torch.softmax(norm_counts, dim=-1)
-        confidence_pct = (confidence_probs.amax(dim=-1) * 100.0)
+
+        # Calibrated SNN firing rate confidence with temperature scaling (tau=0.5):
+        # Prevents mathematical 100% saturation even when competitor neuron fires 0 spikes.
+        T_steps = float(n_steps) if n_steps > 0 else 1.0
+        firing_rates = spike_counts / T_steps
+        evidence = firing_rates + 0.1 * max_mems.clamp(min=0.0, max=1.0)
+        rate_probs = torch.softmax(evidence / 0.5, dim=-1)
+        confidence_pct = (rate_probs.amax(dim=-1) * 100.0)
 
         aux_traces["confidence_pct"] = confidence_pct
+        aux_traces["rate_probs"] = rate_probs
         aux_traces["out_spikes"] = out_spikes_tensor
         aux_traces["out_counts"] = spike_counts
 
