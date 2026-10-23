@@ -16,6 +16,7 @@ import streamlit as st
 
 from shared.data import load_csv, load_json, output_dir
 from components.c1_encoding.comparison_view import render_comparison_tab
+from components.c1_encoding.decoding_view import render_decoding_tab
 from components.c1_encoding.interactive import render_live_demo, render_output_tab
 from shared.layout import STANDARD_SECTIONS, page_header, placeholder, show_image
 
@@ -128,8 +129,9 @@ def _why_twenty_percent(results) -> None:
 def render() -> None:
     page_header(KEY)
     results = output_dir(KEY)
-    sub_problem, prototype, output, comparison, requirements, design = st.tabs(
-        [STANDARD_SECTIONS[0], STANDARD_SECTIONS[1], "Output for C2", "Encoder comparison", *STANDARD_SECTIONS[2:]]
+    sub_problem, prototype, decoding, output, comparison, requirements, design = st.tabs(
+        [STANDARD_SECTIONS[0], STANDARD_SECTIONS[1], "Decoding and fidelity", "Output for C2",
+         "Encoder comparison", *STANDARD_SECTIONS[2:]]
     )
 
     with sub_problem:
@@ -143,6 +145,9 @@ def render() -> None:
         st.header("Saved example")
         show_image(results / "encoding_demo" / "02010002_tbr_demo.png",
                    "Original vs decoded EEG and the UP/DOWN spike raster (scripts/c1_encode_demo.py)")
+
+    with decoding:
+        render_decoding_tab(results)
 
     with output:
         render_output_tab()
