@@ -10,6 +10,18 @@ Frontend/components/<component>/page.py and is owned by that component's member.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_FRONTEND_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _FRONTEND_DIR.parent
+_SRC_DIR = _REPO_ROOT / "src"
+
+if str(_FRONTEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_FRONTEND_DIR))
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
 import streamlit as st
 
 from components.c1_encoding import page as c1
