@@ -24,15 +24,21 @@ import torch
 
 from snn_depression.common.config import load_config
 from snn_depression.common.contracts import CLASS_NAMES, check_spike_train
-from snn_depression.c1_encoding.calibration import ThresholdSettings, compute_threshold_profile
-from snn_depression.c1_encoding.decoder import leak_from_cutoff, reconstruct
-from snn_depression.c1_encoding.encoder import AdaptiveThresholdEncoder, tbr_encode_signed
+from snn_depression.c1_encoding.calibration import ThresholdProfile
 from snn_depression.c1_encoding.fidelity import signal_integrity, spectral_fidelity
 from snn_depression.c1_encoding.handover import PROFILE_DIR, SPIKE_DIR
+from snn_depression.c1_encoding.main_encoder import (
+    DISPLAY_NAMES,
+    decode,
+    encode,
+    fit_profile,
+    main_k,
+    main_method,
+    make_encoder,
+)
 from shared.data import load_manifest, preprocessed_dir
 
 UP, DOWN, THETA = "#2f9e44", "#e03131", "#f08c00"
-K_MAIN = 1.0  # the k the system uses (selected on calibration data); the slider is a demo only
 STEPS = (
     "Load the EEG",
     "Calculate the 128 thresholds from the first 20%",
@@ -46,6 +52,16 @@ def _config() -> dict:
     return load_config("c1_encoding")
 
 
+def _method() -> str:
+    """C1's main encoder (configs/c1_encoding.yaml → encoder.method)."""
+    return main_method(_config())
+
+
+def _k_main() -> float:
+    """The k the system uses (selected on calibration data); the slider is a demo only."""
+    return main_k(_config())
+
+
 @st.cache_data(show_spinner=False)
 def _load_eeg(subject_id: str) -> tuple[np.ndarray, np.ndarray]:
     folder = preprocessed_dir()
@@ -55,20 +71,15 @@ def _load_eeg(subject_id: str) -> tuple[np.ndarray, np.ndarray]:
 @st.cache_data(show_spinner=False)
 def _fit_profile(subject_id: str, channel_names: tuple[str, ...], calibration_seconds: float, unit: str) -> dict:
     calibration, _ = _load_eeg(subject_id)
-    profile = compute_threshold_profile(
-        calibration, list(channel_names), subject_id=subject_id, k=K_MAIN,
-        settings=ThresholdSettings.from_config(_config()["calibration"]),
-        calibration_seconds=calibration_seconds, unit=unit,
-    )
+    profile = fit_profile(calibration, list(channel_names), subject_id=subject_id,
+                          calibration_seconds=calibration_seconds, unit=unit, config=_config())
     return profile.to_dict()
 
 
 @st.cache_data(show_spinner=False)
 def _encode_whole(subject_id: str, profile_dict: dict) -> np.ndarray:
-    from snn_depression.c1_encoding.calibration import ThresholdProfile
-
     calibration, evaluation = _load_eeg(subject_id)
-    encoder = AdaptiveThresholdEncoder.from_profile(ThresholdProfile.from_dict(profile_dict))
+    encoder = make_encoder(ThresholdProfile.from_dict(profile_dict))
     spikes = encoder.encode(torch.from_numpy(np.concatenate([calibration, evaluation])))
     check_spike_train(spikes, n_channels=256)
     return spikes.numpy().astype(np.uint8)
@@ -81,9 +92,8 @@ def _fidelity(subject_id: str, profile_dict: dict, fs: float, channel_names: tup
     n_calibration = int(profile_dict["calibration_window_count"])
     spikes = torch.from_numpy(_encode_whole(subject_id, profile_dict)[n_calibration:].astype(np.float32))
     eeg = torch.from_numpy(evaluation)
-    leak = leak_from_cutoff(_config()["decoder"]["leak_cutoff_hz"], fs)
     thresholds = torch.tensor(profile_dict["thresholds"], dtype=torch.float64)
-    rebuilt = reconstruct(spikes, thresholds, eeg[:, :, 0].double(), leak=leak)
+    rebuilt = decode(spikes, thresholds, eeg[:, :, 0].double(), profile_dict["encoder"], _config(), fs)
     fidelity_cfg = _config()["fidelity"]
     spectral = spectral_fidelity(
         eeg, rebuilt, fs, list(channel_names),
@@ -134,9 +144,10 @@ def _run(row: dict, manifest: dict) -> None:
         saved_note = ""
         if saved_path.is_file():
             saved = json.loads(saved_path.read_text(encoding="utf-8"))
-            same = np.allclose(saved["thresholds"], profile["thresholds"]) and saved["k"] == profile["k"]
+            same = (np.allclose(saved["thresholds"], profile["thresholds"]) and saved["k"] == profile["k"]
+                    and saved.get("encoder", "tbr") == profile["encoder"])
             saved_note = " · matches the saved profile ✅" if same else " · ⚠️ differs from the saved profile (re-run c1_calibrate.py)"
-        st.write(f"✅ 128 thresholds, θ = mean(d) + {K_MAIN:g} × std(d), from {calibration.shape[0]} calibration windows "
+        st.write(f"✅ 128 thresholds, θ = mean(d) + {profile['k']:g} × std(d) of the changes, from {calibration.shape[0]} calibration windows "
                  f"only · {timings[1]:.1f} s{saved_note}")
 
         start = time.perf_counter()
@@ -144,7 +155,7 @@ def _run(row: dict, manifest: dict) -> None:
         spikes = _encode_whole(subject_id, profile)
         st.session_state[f"c1_live_{subject_id}"] = {"profile": profile, "spikes": spikes}
         timings[2] = time.perf_counter() - start
-        st.write(f"✅ spikes `{list(spikes.shape)}` = {calibration.shape[0]} + {evaluation.shape[0]} windows × 500 steps × "
+        st.write(f"✅ {DISPLAY_NAMES[profile['encoder']]} spikes `{list(spikes.shape)}` = {calibration.shape[0]} + {evaluation.shape[0]} windows × 500 steps × "
                  f"256 channels · contract check passed · {timings[2]:.1f} s")
 
         start = time.perf_counter()
@@ -309,7 +320,8 @@ def _output_for_c2(row: dict, manifest: dict, live: dict) -> None:
         data, source = exported.read_bytes(), "the exported file from scripts/c1_export_spikes.py"
     else:
         buffer = io.BytesIO()
-        np.savez_compressed(buffer, spikes=spikes, n_calibration_windows=np.int64(n_cal), k=np.float64(K_MAIN))
+        np.savez_compressed(buffer, spikes=spikes, n_calibration_windows=np.int64(n_cal),
+                            k=np.float64(live["profile"]["k"]), encoder=np.array(live["profile"]["encoder"]))
         data, source = buffer.getvalue(), "generated now (no exported file found)"
     st.download_button(f"Download {subject_id}.npz ({len(data) / 1e6:.1f} MB)", data, file_name=f"{subject_id}.npz",
                        mime="application/octet-stream", icon=":material/download:", key="c1_live_download")
@@ -324,32 +336,39 @@ def _output_for_c2(row: dict, manifest: dict, live: dict) -> None:
     )
 
 
+@st.cache_data(show_spinner=False)
+def _density_for(subject_id: str, k: float, profile_dict: dict) -> float:
+    """Spike density on the last 80% if the thresholds used multiplier k (demo only)."""
+    _, evaluation = _load_eeg(subject_id)
+    mean, std = np.asarray(profile_dict["mean_derivative"]), np.asarray(profile_dict["derivative_std"])
+    theta = torch.from_numpy(np.maximum(mean + k * std, float(_config()["calibration"]["minimum_threshold"]))).float()
+    spikes = encode(torch.from_numpy(evaluation), theta, profile_dict["encoder"])
+    return float(spikes.sum()) / (spikes.numel() / 2)
+
+
 def _k_demo(row: dict, live: dict) -> None:
-    st.subheader("Try the sensitivity k (demonstration only)")
-    st.caption(f"The system always uses **k = {K_MAIN:g}**, chosen on calibration data. Moving this slider does not "
-               "change the output above; it only shows how k changes the number of spikes.")
     profile = live["profile"]
+    k_main = float(profile["k"])
+    st.subheader("Try the sensitivity k (demonstration only)")
+    st.caption(f"The system always uses **k = {k_main:g}**, chosen on calibration data. Moving this slider does not "
+               "change the output above; it only shows how k changes the number of spikes.")
     mean, std = np.asarray(profile["mean_derivative"]), np.asarray(profile["derivative_std"])
     minimum = float(_config()["calibration"]["minimum_threshold"])
     _, evaluation = _load_eeg(row["subject_id"])
-    eeg = torch.from_numpy(evaluation)
+    subject_id = row["subject_id"]
 
-    def density_for(k: float) -> float:
-        theta = torch.from_numpy(np.maximum(mean + k * std, minimum)).float()
-        return float(tbr_encode_signed(eeg, theta).abs().float().mean())
-
-    k = st.slider("k", 0.1, 3.0, K_MAIN, 0.1, key="c1_live_k")
-    current, main = density_for(k), density_for(K_MAIN)
+    k = st.slider("k", 0.25, 4.0, k_main, 0.25, key="c1_live_k")
+    current, main = _density_for(subject_id, k, profile), _density_for(subject_id, k_main, profile)
     columns = st.columns(3)
-    columns[0].metric("Spike density at this k", f"{current:.1%}", delta=f"{(current - main) * 100:+.1f} points vs k = {K_MAIN:g}")
+    columns[0].metric("Spike density at this k", f"{current:.1%}", delta=f"{(current - main) * 100:+.1f} points vs k = {k_main:g}")
     columns[1].metric("Median θ at this k", f"{np.median(np.maximum(mean + k * std, minimum)):.3f}")
     columns[2].metric("Spikes on the last 80%", f"{int(current * evaluation.size):,}")
 
-    grid = np.round(np.arange(0.2, 3.01, 0.2), 2)
-    curve = [density_for(value) for value in grid]
+    grid = np.round(np.arange(0.5, 4.01, 0.5), 2)
+    curve = [_density_for(subject_id, float(value), profile) for value in grid]
     fig, axis = plt.subplots(figsize=(8, 3))
     axis.plot(grid, curve, marker="o", color="#3b5bdb")
-    axis.axvline(K_MAIN, color="#495057", linestyle=":", label=f"system k = {K_MAIN:g}")
+    axis.axvline(k_main, color="#495057", linestyle=":", label=f"system k = {k_main:g}")
     axis.scatter([k], [current], color=THETA, s=120, zorder=5, label=f"slider k = {k:g}")
     axis.set_xlabel("k")
     axis.set_ylabel("spike density")
@@ -368,7 +387,8 @@ def render_live_demo() -> None:
         st.warning("No preprocessed data found. Run `python scripts/c1_preprocess_modma.py` first.")
         return
     st.header("Run the encoder live")
-    st.write("Choose a patient and run the four C1 steps on their real EEG.")
+    st.write(f"Choose a patient and run the four C1 steps on their real EEG with the main encoder, "
+             f"**{DISPLAY_NAMES[_method()]}** (k = {_k_main():g}).")
     row = _patient_picker(manifest)
     if st.button("Run encoding", type="primary", icon=":material/play_arrow:", key="c1_live_run"):
         _run(row, manifest)

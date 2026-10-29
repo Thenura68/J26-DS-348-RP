@@ -16,7 +16,7 @@ import streamlit as st
 import torch
 
 from components.c1_encoding.interactive import _config, _encode_whole, _load_eeg
-from snn_depression.c1_encoding.decoder import leak_from_cutoff, reconstruct
+from snn_depression.c1_encoding.main_encoder import DISPLAY_NAMES, decode, main_method
 from snn_depression.c1_encoding.fidelity import band_powers, relative_band_powers, signal_integrity
 from shared.data import load_csv, load_manifest
 
@@ -56,7 +56,8 @@ def _cohort_percentages(results) -> tuple[float, float] | None:
     table = load_csv(str(results / "encoder_comparison" / "feature_preservation.csv"))
     if table is None:
         return None
-    tbr = table[(table["method"] == "tbr") & (table["setting"] == "selected")]
+    key = "step_forward_changes" if main_method(_config()) == "step_forward" else "tbr"
+    tbr = table[(table["method"] == key) & (table["setting"] == "selected")]
     if tbr.empty:
         return None
     features = float(100 * tbr["spearman_original_vs_reconstructed"].median())
@@ -107,13 +108,13 @@ def _preservation_cards(row: dict | None, live: dict | None, results) -> None:
 
 @st.cache_data(show_spinner="Decoding the last 80%…")
 def _decode_evaluation(subject_id: str, profile_dict: dict, fs: float) -> np.ndarray:
-    """Rebuilt EEG [N_eval, 128, T] from the spikes of the last 80% (leaky TBR decoder)."""
+    """Rebuilt EEG [N_eval, 128, T] from the spikes of the last 80% (the main encoder's decoder)."""
     _, evaluation = _load_eeg(subject_id)
     n_cal = int(profile_dict["calibration_window_count"])
     spikes = torch.from_numpy(_encode_whole(subject_id, profile_dict)[n_cal:].astype(np.float32))
-    leak = leak_from_cutoff(_config()["decoder"]["leak_cutoff_hz"], fs)
     thresholds = torch.tensor(profile_dict["thresholds"], dtype=torch.float64)
-    rebuilt = reconstruct(spikes, thresholds, torch.from_numpy(evaluation[:, :, 0]).double(), leak=leak)
+    rebuilt = decode(spikes, thresholds, torch.from_numpy(evaluation[:, :, 0]).double(),
+                     profile_dict["encoder"], _config(), fs)
     return rebuilt.float().numpy()
 
 
@@ -136,28 +137,45 @@ def _band_comparison(subject_id: str, profile_dict: dict, fs: float) -> dict:
 
 
 def _explanation() -> None:
+    method = main_method(_config())
     st.header("How decoding works")
     st.write(
-        "Decoding rebuilds the EEG **from the spikes only**, to check how much of the signal the "
-        "spikes still carry. The SNN in Component 2 never decodes; this is a quality check."
+        f"Decoding rebuilds the EEG **from the spikes only**, to check how much of the signal the spikes still "
+        f"carry. The SNN in Component 2 never decodes; this is a quality check. Main encoder: "
+        f"**{DISPLAY_NAMES[method]}**."
     )
     left, right = st.columns([1.1, 1])
-    with left:
-        st.markdown(
-            "1. **Start** from the true first sample of each 2-second window.\n"
-            "2. **UP spike → add +θ**, **DOWN spike → add −θ**, no spike → add nothing.\n"
-            "3. **Leak:** at every step the rebuilt value is pulled slightly back towards 0 "
-            "(it keeps 97.5% of its value). The EEG always moves around 0, so this stops the small "
-            "errors from piling up into drift.\n"
-            "4. **Compare** the rebuilt EEG with the real EEG on the unseen last 80%."
-        )
-    with right:
-        st.code("x̂[0] = first sample\n"
-                "x̂[t] = leak × x̂[t−1] + θ × spike[t]\n"
-                "        leak = 0.975   (1 Hz cut-off)\n"
-                "        spike[t] = +1 (UP), −1 (DOWN), 0", language="text")
-        st.caption("The rebuilt signal is never identical: TBR deliberately drops changes smaller than θ "
-                   "to keep the spikes sparse. What matters is that the important information survives.")
+    if method == "step_forward":
+        with left:
+            st.markdown(
+                "1. **Start** from the true first sample of each 2-second window.\n"
+                "2. **UP spike → step the baseline up by θ**, **DOWN spike → step it down by θ**, "
+                "no spike → keep it.\n"
+                "3. That baseline **is** the rebuilt signal. The encoder moved exactly the same baseline, "
+                "so small changes that build up are not lost and the error stays around one θ (no drift, "
+                "no leak needed).\n"
+                "4. **Compare** the rebuilt EEG with the real EEG on the unseen last 80%."
+            )
+        with right:
+            st.code("x̂[0] = first sample\n"
+                    "x̂[t] = x̂[t−1] + θ × spike[t]\n"
+                    "        spike[t] = +1 (UP), −1 (DOWN), 0", language="text")
+            st.caption("The rebuilt signal is a staircase that follows the EEG within about one θ: "
+                       "details smaller than θ are not encoded, but nothing builds up into drift.")
+    else:
+        with left:
+            st.markdown(
+                "1. **Start** from the true first sample of each 2-second window.\n"
+                "2. **UP spike → add +θ**, **DOWN spike → add −θ**, no spike → add nothing.\n"
+                "3. **Leak:** at every step the rebuilt value is pulled slightly back towards 0, so the "
+                "changes TBR dropped do not pile up into drift.\n"
+                "4. **Compare** the rebuilt EEG with the real EEG on the unseen last 80%."
+            )
+        with right:
+            st.code("x̂[0] = first sample\n"
+                    "x̂[t] = leak × x̂[t−1] + θ × spike[t]\n"
+                    "        spike[t] = +1 (UP), −1 (DOWN), 0", language="text")
+            st.caption("TBR deliberately drops changes smaller than θ, so the rebuilt signal is never identical.")
 
 
 def _overlay(row: dict, manifest: dict, live: dict, rebuilt: np.ndarray) -> None:
@@ -258,9 +276,11 @@ def _cohort_information(results) -> None:
     if table is None:
         st.warning("Run `python scripts/c1_compare_encoders.py` to produce the cohort results.")
         return
-    tbr = table[(table["method"] == "tbr") & (table["setting"] == "selected")].copy()
+    key = "step_forward_changes" if main_method(_config()) == "step_forward" else "tbr"
+    tbr = table[(table["method"] == key) & (table["setting"] == "selected")].copy()
     if tbr.empty:
-        st.warning("No TBR results in the comparison file.")
+        st.warning(f"No {DISPLAY_NAMES[main_method(_config())]} results in the comparison file yet; "
+                   "re-run `python scripts/c1_compare_encoders.py`.")
         return
     readable = {"anterior": "Front", "central": "Centre", "posterior": "Back"}
 

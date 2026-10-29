@@ -1,5 +1,8 @@
 """C1 → C2 handover: encode a patient's whole recording with thresholds from its first 20%.
 
+The encoder is the one recorded in the patient's profile, i.e. C1's main encoder
+(``main_encoder``; patient-adaptive Step-Forward) unless the profile says otherwise.
+
 The thresholds come from the patient's saved calibration profile, which
 ``scripts/c1_calibrate.py`` fits on the calibration windows only (the first 20% of the
 recording). The whole recording (calibration windows followed by evaluation windows, in
@@ -23,7 +26,7 @@ from torch import Tensor
 from snn_depression.common.contracts import check_spike_train
 from snn_depression.common.paths import INTERIM_DIR, OUTPUT_ROOT
 from snn_depression.c1_encoding.calibration import ThresholdProfile
-from snn_depression.c1_encoding.encoder import AdaptiveThresholdEncoder
+from snn_depression.c1_encoding.main_encoder import make_encoder
 
 PREPROCESSED_DIR = INTERIM_DIR / "modma_preprocessed"
 PROFILE_DIR = OUTPUT_ROOT / "c1" / "calibration" / "profiles"
@@ -42,6 +45,7 @@ class RecordingSpikes:
     spikes: Tensor
     n_calibration_windows: int
     k: float
+    encoder: str = "tbr"
 
     @property
     def calibration(self) -> Tensor:
@@ -84,13 +88,13 @@ def encode_recording(
             f"but the data has {calibration.shape[0]}; re-run scripts/c1_calibrate.py"
         )
     eeg = torch.from_numpy(np.concatenate([calibration, evaluation]).astype(np.float32, copy=False))
-    spikes = AdaptiveThresholdEncoder.from_profile(profile).encode(eeg)
+    spikes = make_encoder(profile).encode(eeg)
     check_spike_train(spikes, n_channels=2 * len(profile.channel_names))
-    return RecordingSpikes(subject_id, spikes, int(calibration.shape[0]), float(profile.k))
+    return RecordingSpikes(subject_id, spikes, int(calibration.shape[0]), float(profile.k), profile.encoder)
 
 
 def save_recording_spikes(recording: RecordingSpikes, spike_dir: Path = SPIKE_DIR) -> Path:
-    """Save as compressed ``<id>.npz`` (uint8 spikes + boundary + k); returns the path."""
+    """Save as compressed ``<id>.npz`` (uint8 spikes + boundary + k + encoder); returns the path."""
     spike_dir = Path(spike_dir)
     spike_dir.mkdir(parents=True, exist_ok=True)
     path = spike_dir / f"{recording.subject_id}.npz"
@@ -99,6 +103,7 @@ def save_recording_spikes(recording: RecordingSpikes, spike_dir: Path = SPIKE_DI
         spikes=recording.spikes.numpy().astype(np.uint8),
         n_calibration_windows=np.int64(recording.n_calibration_windows),
         k=np.float64(recording.k),
+        encoder=np.array(recording.encoder),
     )
     return path
 
@@ -110,6 +115,7 @@ def load_exported_spikes(subject_id: str, spike_dir: Path = SPIKE_DIR) -> Record
         raise FileNotFoundError(f"No exported spikes for {subject_id} at {path}; run scripts/c1_export_spikes.py")
     with np.load(path) as data:
         spikes = torch.from_numpy(data["spikes"].astype(np.float32))
-        recording = RecordingSpikes(subject_id, spikes, int(data["n_calibration_windows"]), float(data["k"]))
+        encoder = str(data["encoder"]) if "encoder" in data.files else "tbr"
+        recording = RecordingSpikes(subject_id, spikes, int(data["n_calibration_windows"]), float(data["k"]), encoder)
     check_spike_train(recording.spikes)
     return recording

@@ -66,8 +66,10 @@ from snn_depression.c1_encoding.fidelity import (
 def _grids(config: dict[str, Any]) -> dict[str, dict[str, list]]:
     comparison, bsa = config["comparison"], config["bsa"]
     return {
+        "step_forward_changes": {"k": list(config["encoder"]["k_candidates"])},
         "tbr": {"k": list(config["calibration"]["k_candidates"])},
         "aer": {"theta": list(comparison["aer_thresholds"])},
+        "step_forward_fixed": {"theta": list(comparison["step_forward_fixed_thresholds"])},
         "step_forward": {"k_sf": list(comparison["step_forward_k"])},
         "bsa": {
             "filter_length": list(bsa["filter_lengths"]),
@@ -281,17 +283,19 @@ def run(selected_methods: list[str] | None = None) -> None:
         })
 
     tests: list[dict[str, Any]] = []
-    if "tbr" in method_names:
+    # Paired tests use the main encoder as the reference (TBR if the main encoder was not run).
+    reference_name = next((m for m in ("step_forward_changes", "tbr") if m in method_names), None)
+    if reference_name is not None:
         for label in {r["setting"] for r in summary}:
-            reference = {r["subject_id"]: r for r in per_subject if r["method"] == "tbr" and r["setting"] == label}
+            reference = {r["subject_id"]: r for r in per_subject if r["method"] == reference_name and r["setting"] == label}
             for name in method_names:
-                if name == "tbr":
+                if name == reference_name:
                     continue
                 other = {r["subject_id"]: r for r in per_subject if r["method"] == name and r["setting"] == label}
                 for metric in ("snr_db", "correlation", "relative_power_abs_error", "faa_abs_error"):
                     result = paired_comparison({s: v[metric] for s, v in reference.items()},
                                                {s: v[metric] for s, v in other.items()})
-                    tests.append({"setting": label, "comparison": f"tbr - {name}", "metric": metric, **result})
+                    tests.append({"setting": label, "comparison": f"{reference_name} - {name}", "metric": metric, **result})
         for test, adjusted in zip(tests, holm_correction([t["p"] for t in tests])):
             test["p_holm"] = adjusted
 
@@ -325,5 +329,5 @@ def run(selected_methods: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--methods", nargs="+", choices=["tbr", "aer", "step_forward", "bsa"])
+    parser.add_argument("--methods", nargs="+", choices=["step_forward_changes", "step_forward_fixed", "tbr", "aer", "step_forward", "bsa"])
     run(parser.parse_args().methods)

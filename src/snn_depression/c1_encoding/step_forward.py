@@ -1,13 +1,30 @@
-"""Step-Forward (SF) temporal-contrast encoding."""
+"""Step-Forward (SF) temporal-contrast encoding: C1's main encoder.
+
+SF keeps a baseline per channel and emits UP/DOWN when the signal moves more than theta
+away from it, moving the baseline by theta each time. Small changes accumulate against
+the baseline instead of being dropped, so reconstruction does not drift.
+
+The main encoder is ``AdaptiveStepForwardEncoder``: its thresholds come from the
+patient-adaptive rule in ``calibration.compute_threshold_profile`` (theta_c =
+mean(d_c) + k * std(d_c) of the changes in the patient's first 20%), the same rule TBR
+uses. ``calibration_std_thresholds`` (k * std of the signal) is kept for the earlier
+encoder comparison and diagnostics.
+"""
 
 from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 from torch import Tensor
 
-from snn_depression.common.contracts import check_spike_train
-from snn_depression.c1_encoding.encoder import to_dual_binary
+from snn_depression.common.contracts import check_eeg, check_spike_train
+from snn_depression.c1_encoding.encoder import PolarityMode, threshold_view, to_dual_binary, validate_polarity_mode
+
+if TYPE_CHECKING:
+    from snn_depression.c1_encoding.calibration import ThresholdProfile
 
 
 def step_forward_signed(eeg: Tensor, thresholds: Tensor) -> Tensor:
@@ -180,3 +197,49 @@ def encode_reanchored(
                 + torch.cumsum(increments, dim=-1)
             )
     return signed, decoded
+
+class AdaptiveStepForwardEncoder:
+    """Patient-adaptive Step-Forward encoder: one threshold per channel for one subject.
+
+    Build it with ``from_profile`` from a profile fitted on the subject's calibration
+    windows only (``calibration.compute_threshold_profile``). ``encode`` accepts EEG
+    [B, C, T] float32 and returns dual-binary contract spikes [B, T, 2C] float32, or
+    internal signed int8 spikes [B, C, T] with ``polarity_mode="signed"``.
+    """
+
+    def __init__(
+        self,
+        thresholds: np.ndarray | Tensor,
+        *,
+        channel_names: Sequence[str],
+        subject_id: str,
+        polarity_mode: PolarityMode = "dual_binary",
+    ) -> None:
+        self.channel_names = tuple(channel_names)
+        self.subject_id = str(subject_id)
+        self.polarity_mode = validate_polarity_mode(polarity_mode)
+        values = torch.as_tensor(thresholds, dtype=torch.float32)
+        if values.ndim != 1 or values.shape[0] != len(self.channel_names):
+            raise ValueError(
+                f"Expected one threshold per channel [{len(self.channel_names)}], got {tuple(values.shape)}"
+            )
+        threshold_view(values, 1, len(self.channel_names))
+        self._thresholds = values
+
+    @classmethod
+    def from_profile(
+        cls, profile: ThresholdProfile, *, polarity_mode: PolarityMode = "dual_binary"
+    ) -> AdaptiveStepForwardEncoder:
+        """Create the encoder for the subject described by a fitted profile."""
+        return cls(profile.thresholds, channel_names=profile.channel_names,
+                   subject_id=profile.subject_id, polarity_mode=polarity_mode)
+
+    @property
+    def thresholds(self) -> Tensor:
+        """Per-channel threshold vector [C] (float32, EEG data units)."""
+        return self._thresholds
+
+    def encode(self, eeg: Tensor) -> Tensor:
+        """Encode EEG [B, C, T] as dual-binary [B, T, 2C] or signed [B, C, T]."""
+        check_eeg(eeg, n_channels=len(self.channel_names))
+        return step_forward(eeg, self._thresholds.to(eeg.device), polarity_mode=self.polarity_mode)

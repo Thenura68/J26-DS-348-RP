@@ -15,7 +15,7 @@ reconstruction fidelity. Encoding, decoding and the metrics are imported from
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import MISSING, asdict, dataclass, fields
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -75,6 +75,7 @@ class ThresholdProfile:
     calibration_window_count: int
     unit: str
     flagged_channels: dict[str, list[str]]
+    encoder: str = "tbr"  # which encoder applies these thresholds: "tbr" or "step_forward"
 
     _ARRAY_FIELDS = ("thresholds", "mean_derivative", "derivative_std")
 
@@ -90,9 +91,13 @@ class ThresholdProfile:
     def from_dict(cls, payload: Mapping[str, Any]) -> ThresholdProfile:
         """Rebuild a profile saved with ``to_dict`` (e.g. a profile JSON file).
 
-        Keys that are not profile fields (e.g. from older profile versions) are ignored.
+        Keys that are not profile fields (e.g. from older profile versions) are ignored;
+        fields missing from older files (``encoder``) take their default.
         """
-        values = {field.name: payload[field.name] for field in fields(cls)}
+        values = {
+            field.name: payload.get(field.name, field.default) if field.default is not MISSING else payload[field.name]
+            for field in fields(cls)
+        }
         values["channel_names"] = tuple(values["channel_names"])
         for field_name in cls._ARRAY_FIELDS:
             values[field_name] = np.asarray(values[field_name], dtype=np.float64)
@@ -165,8 +170,12 @@ def compute_threshold_profile(
     settings: ThresholdSettings,
     calibration_seconds: float,
     unit: str,
+    encoder: str = "tbr",
 ) -> ThresholdProfile:
-    """Fit a subject's per-channel TBR thresholds from calibration windows only.
+    """Fit a subject's per-channel adaptive thresholds from calibration windows only.
+
+    The rule (theta_c = mean(d_c) + k * std(d_c) of the changes) is the same for every
+    encoder; ``encoder`` records which one applies them ("tbr" or "step_forward").
 
     Input has shape [N_cal, C, T]. Pass the profile to
     ``AdaptiveThresholdEncoder.from_profile`` to encode that subject's EEG.
@@ -201,6 +210,7 @@ def compute_threshold_profile(
             reason: [str(channel_names[i]) for i in np.flatnonzero(mask)]
             for reason, mask in flagged_indices.items()
         },
+        encoder=str(encoder),
     )
 
 

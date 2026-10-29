@@ -1,4 +1,4 @@
-"""Demonstrate C1 TBR encoding and decoding on one held-out subject."""
+"""Demonstrate C1's main encoder (encoding and decoding) on one held-out subject."""
 
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ from snn_depression.c1_encoding.calibration import (
     ThresholdSettings,
     compute_threshold_profile,
 )
-from snn_depression.c1_encoding.decoder import leak_from_cutoff, reconstruct
-from snn_depression.c1_encoding.encoder import AdaptiveThresholdEncoder
+from snn_depression.c1_encoding.main_encoder import decode as decode_main
+from snn_depression.c1_encoding.main_encoder import make_encoder, main_method
 from snn_depression.c1_encoding.fidelity import signal_integrity
 
 
@@ -137,7 +137,7 @@ def _save_demo_plot(
     density_axis.set_ylabel("Spike\ndensity")
     density_axis.set_xlabel("Time (s)")
     fig.suptitle(
-        f"Subject {subject_id}: TBR reconstruction and spike activity "
+        f"Subject {subject_id}: reconstruction and spike activity "
         f"({overlay_samples / fs:.1f} s)"
     )
     fig.tight_layout()
@@ -179,11 +179,9 @@ def run() -> None:
         settings=ThresholdSettings.from_config(config["calibration"]),
         calibration_seconds=float(row["calibration_duration_sec"]),
         unit=str(manifest["unit"]),
+        encoder=main_method(config),
     )
-    encoder = AdaptiveThresholdEncoder.from_profile(
-        fitted_profile,
-        polarity_mode=str(config["encoder"]["polarity_mode"]),
-    )
+    encoder = make_encoder(fitted_profile)  # C1's main encoder
     if not np.allclose(
         fitted_profile.thresholds,
         np.asarray(saved_profile["thresholds"], dtype=np.float64),
@@ -204,14 +202,8 @@ def run() -> None:
     dual_binary = encoder.encode(eeg)
     check_spike_train(dual_binary, n_channels=2 * len(channel_names))
     fs = float(row["fs"])
-    decoder_leak = leak_from_cutoff(config["decoder"]["leak_cutoff_hz"], fs)
-    decoded = reconstruct(
-        dual_binary,
-        encoder.thresholds,
-        eeg[:, :, 0],
-        polarity_mode="dual_binary",
-        leak=decoder_leak,
-    )
+    decoded = decode_main(dual_binary, encoder.thresholds.double(), eeg[:, :, 0].double(),
+                          fitted_profile.encoder, config, fs)
 
     overlay_seconds = float(demo["overlay_seconds"])
     overlay_samples = int(round(overlay_seconds * fs))
@@ -251,7 +243,7 @@ def run() -> None:
             "subject_id": subject_id,
             "group": str(row["group"]),
             "threshold_k": float(phase1["selected_global_k"]),
-            "decoder_leak": decoder_leak,
+            "encoder": fitted_profile.encoder,
             "unit": str(manifest["unit"]),
             "contract_dtype": str(dual_binary.dtype),
             "side_information": (
@@ -262,7 +254,7 @@ def run() -> None:
 
     output_dir = OUTPUT_ROOT / "c1" / "encoding_demo"
     output_dir.mkdir(parents=True, exist_ok=True)
-    plot_path = output_dir / f"{subject_id}_tbr_demo.png"
+    plot_path = output_dir / f"{subject_id}_encoding_demo.png"
     _save_demo_plot(
         subject_id=subject_id,
         channel_names=channel_names,

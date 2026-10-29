@@ -7,6 +7,7 @@ windows, in time order) and save outputs/c1/spikes/<id>.npz with:
 - spikes: uint8 [N_windows, 500, 256] (convert to float32 at the boundary)
 - n_calibration_windows: windows [:n] = first 20%, [n:] = last 80%
 - k: the threshold multiplier used
+- encoder: the encoder that produced the spikes (C1's main encoder, "step_forward")
 
 Also writes outputs/c1/spikes/spikes_manifest.json (per-subject shapes and boundaries).
 Run scripts/c1_calibrate.py first. Usage: python scripts/c1_export_spikes.py
@@ -41,14 +42,16 @@ def run() -> None:
             "n_calibration_windows": recording.n_calibration_windows,
             "n_evaluation_windows": int(recording.spikes.shape[0]) - recording.n_calibration_windows,
             "k": recording.k,
+            "encoder": recording.encoder,
             "spike_density_per_electrode": float(recording.spikes.sum()) / (recording.spikes.numel() / 2),
         })
         print(f"  {index}/{len(rows)} {recording.subject_id}: {tuple(recording.spikes.shape)}, "
               f"first {recording.n_calibration_windows} windows = calibration")
     summary = {
         "description": "C1 spike trains: whole recording per subject, thresholds from the first 20% only",
+        "encoder": entries[0]["encoder"] if entries else None,
         "format": "npz: spikes uint8 [N_windows, T, 256] (0-127 UP E1-E128, 128-255 DOWN E1-E128), "
-                  "n_calibration_windows, k",
+                  "n_calibration_windows, k, encoder",
         "window_sec": 2.0,
         "subjects": entries,
     }
