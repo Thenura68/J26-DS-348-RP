@@ -1,7 +1,13 @@
 # Component 1 — EEG-to-Spike Encoding (owner: Rathnayake M.N.M)
 
 encoder:
-  method: adaptive_tbr            # per-subject, per-channel TBR thresholds; baseline: FixedThresholdEncoder
+  # Main encoder (c1_encoding/main_encoder.py), chosen by the encoder comparison:
+  #   step_forward = patient-adaptive Step-Forward (main) · tbr = patient-adaptive TBR (baseline)
+  # Both use the same patient-adaptive thresholds: theta_c = mean(d_c) + k * std(d_c) of the
+  # changes in each patient's first 20%.
+  method: step_forward
+  k: 2.0                          # selected by scripts/c1_calibrate.py (sweep below); keep in sync
+  k_candidates: [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]   # Step-Forward sweep (TBR: calibration.k_candidates)
   baseline_sec: 120               # read by preprocessing (capped at the calibration duration)
   polarity_mode: dual_binary      # contract boundary representation [B, T, 2C]
 
@@ -51,12 +57,14 @@ bsa:
   snr_tolerance_db: 0.5
 
 comparison:
-  # scripts/c1_compare_encoders.py: TBR (main) vs AER, Step-Forward and BSA on the same data.
-  # Every method is tuned on calibration windows only with calibration.selection_metric /
-  # snr_tolerance_db; TBR uses calibration.k_candidates and BSA uses the bsa: grids.
+  # scripts/c1_compare_encoders.py: all encoders on the same data. Every method is tuned on
+  # calibration windows only with calibration.selection_metric / snr_tolerance_db.
+  # step_forward_changes = the main encoder (adaptive SF, theta from std of changes, encoder.k_candidates);
+  # step_forward = SF with theta from std of the signal; tbr uses calibration.k_candidates; bsa the bsa: grids.
   output_subdirectory: encoder_comparison
-  methods: [tbr, aer, step_forward, bsa]
+  methods: [step_forward_changes, step_forward_fixed, tbr, aer, step_forward, bsa]
   aer_thresholds: [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 1.0]  # one fixed theta for all
+  step_forward_fixed_thresholds: [0.1, 0.2, 0.3, 0.35, 0.4, 0.5, 0.6, 0.8, 1.0]  # SF with one theta for all
   step_forward_k: [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5]              # theta_c = k_sf * std(x)
   matched_density_targets: [0.15, 0.30]   # also compare every method at these spike densities
   decision:                               # fixed before running (pre-registered)
@@ -80,7 +88,6 @@ dashboard:
   subject_id: "02010002"          # patient shown in the split and step figures
   comparison_subject_id: "02020008"   # second patient for the adaptation comparison
   channel: E1
-  k: 1.0
   zoom_seconds: 1.0               # length of the step-by-step close-up
 
 diagnostics:

@@ -11,10 +11,21 @@ from shared.data import load_csv, load_json
 from shared.layout import show_image
 
 METHODS = {
+    "step_forward_changes": {
+        "name": "Adaptive Step-Forward", "full": "Step-Forward with patient-adaptive θ", "colour": "#0b7285",
+        "rule": "Spike when the signal moves θ away from a tracked baseline",
+        "adaptive": "θ per patient & electrode from std of changes (same rule as TBR)",
+        "role": "Main encoder",
+    },
+    "step_forward_fixed": {
+        "name": "Fixed Step-Forward", "full": "Step-Forward with one θ", "colour": "#adb5bd",
+        "rule": "Same rule as Step-Forward, one θ for every patient", "adaptive": "Not adaptive (baseline)",
+        "role": "Baseline",
+    },
     "tbr": {
         "name": "TBR", "full": "Threshold-Based Representation", "colour": "#3b5bdb",
         "rule": "Spike when the change between samples exceeds θ", "adaptive": "θ per patient & electrode from std of changes",
-        "role": "Current main encoder",
+        "role": "Previous main encoder",
     },
     "aer": {
         "name": "AER", "full": "Fixed-threshold TBR", "colour": "#868e96",
@@ -100,7 +111,7 @@ def _card(key: str, row: pd.Series, best: dict, chosen: bool, rho_scale: tuple[f
 
 
 def render_comparison_tab(results) -> None:
-    """Cards for TBR, AER, Step-Forward and BSA, plus the decision, plots and paired tests."""
+    """Cards for every compared encoder, plus the decision, plots and paired tests."""
     folder = results / "encoder_comparison"
     summary = load_csv(str(folder / "summary.csv"))
     meta = load_json(str(folder / "summary.json"))
@@ -108,7 +119,7 @@ def render_comparison_tab(results) -> None:
         st.warning("Run `python scripts/c1_compare_encoders.py` to produce the comparison.")
         return
     st.header("Encoder comparison")
-    st.write("Four encoders were tuned on calibration data only and evaluated on the unseen 80% of all "
+    st.write(f"{summary['method'].nunique()} encoders were tuned on calibration data only and evaluated on the unseen 80% of all "
              f"{meta.get('subjects', 53)} patients, with the same rules for every method.")
     available = [s for s in SETTINGS if s in set(summary["setting"])]
     setting = st.radio("Compare", available, format_func=SETTINGS.get, horizontal=True, key="c1_cmp_setting")
@@ -138,8 +149,8 @@ def render_comparison_tab(results) -> None:
             f"**Decision rule (fixed before the run), compared at {SETTINGS.get(decision.get('compared_at'), '')}:** "
             f"best depression-feature preservation; methods within {decision.get('rule', {}).get('feature_rho_tie_margin', 0.02)} "
             f"are tied and the cheapest wins. Tied: {tied}. **Selected: {METHODS[decision['chosen_method']]['name']}** "
-            f"({decision.get('reason', '')}). TBR remains the main encoder for now; moving the patient-adaptive "
-            "calibration onto Step-Forward is the next step.",
+            f"({decision.get('reason', '')}). The patient-adaptive threshold rule was then moved onto Step-Forward: "
+            "**Adaptive Step-Forward is now the main encoder**.",
             icon=":material/gavel:",
         )
 
@@ -155,9 +166,10 @@ def render_comparison_tab(results) -> None:
     if tests is not None:
         view = tests[tests["setting"] == setting][["comparison", "metric", "median_difference", "p_holm"]].copy()
         view["significant"] = view["p_holm"].map(lambda p: "yes" if pd.notna(p) and p < 0.05 else "no")
-        with st.expander("Paired tests against TBR (Wilcoxon, Holm-corrected)"):
+        reference = view["comparison"].iloc[0].split(" - ")[0] if len(view) else "the main encoder"
+        with st.expander(f"Paired tests against {reference} (Wilcoxon, Holm-corrected)"):
             st.dataframe(view, hide_index=True, width="stretch")
-            st.caption("median_difference = TBR minus the other method, per patient. For SNR and correlation, "
-                       "negative means TBR is lower; for the error metrics, negative means TBR has less error.")
+            st.caption(f"median_difference = {reference} minus the other method, per patient. For SNR and correlation, "
+                       f"negative means {reference} is lower; for the error metrics, negative means {reference} has less error.")
     with st.expander("Settings used by each method"):
         st.json(meta.get("settings", {}), expanded=False)

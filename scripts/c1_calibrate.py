@@ -28,7 +28,9 @@ from snn_depression.c1_encoding.calibration import (
     compute_threshold_profile,
     sweep_calibration_k,
 )
+from snn_depression.c1_encoding.comparison import build_methods, select_setting, sweep_method
 from snn_depression.c1_encoding.decoder import leak_from_cutoff
+from snn_depression.c1_encoding.main_encoder import DISPLAY_NAMES, k_candidates, main_k, main_method
 
 
 def _index_ranges(indices: list[int]) -> str:
@@ -95,8 +97,9 @@ def _profile_from_row(
     config: dict[str, Any],
     k: float,
     unit: str,
+    method: str,
 ) -> ThresholdProfile:
-    """Create one final profile after checking calibration windows precede the split."""
+    """Create one final profile (for the main encoder) after checking calibration windows precede the split."""
     data = config["data"]
     check_calibration_windows_inside_split(
         row.get("calibration_source_window_indices", []),
@@ -113,7 +116,45 @@ def _profile_from_row(
         settings=ThresholdSettings.from_config(config["calibration"]),
         calibration_seconds=float(row["calibration_duration_sec"]),
         unit=unit,
+        encoder=method,
     )
+
+
+def _sweep_main_encoder(config: dict[str, Any], calibration_by_subject, decoder_leak: float, fs: float):
+    """Sweep k for the main encoder on calibration windows; same rule for every encoder.
+
+    TBR keeps its own sweep (leaky decoder). Step-Forward is scored with the encoder
+    comparison's interface (plain integration decoder). Rows: k, median/mean subject SNR,
+    median spike density, subjects scored.
+    """
+    calibration_config = config["calibration"]
+    method = main_method(config)
+    if method == "tbr":
+        return sweep_calibration_k(
+            calibration_by_subject,
+            k_candidates=k_candidates(config, method),
+            settings=ThresholdSettings.from_config(calibration_config),
+            selection_metric=str(calibration_config["selection_metric"]),
+            snr_tolerance_db=float(calibration_config["snr_tolerance_db"]),
+            decoder_leak=decoder_leak,
+        )
+    encoder = build_methods(
+        fs=fs,
+        tbr_settings=ThresholdSettings.from_config(calibration_config),
+        decoder_leak=decoder_leak,
+        step_forward_minimum_threshold=float(config["step_forward"]["minimum_threshold"]),
+        bsa_scale_percentile=float(config["bsa"]["scale_percentile"]),
+        bsa_minimum_scale=float(config["bsa"]["minimum_scale"]),
+    )["step_forward_changes"]
+    rows = sweep_method(encoder, {"k": k_candidates(config, method)}, calibration_by_subject)
+    best = select_setting(rows, str(calibration_config["selection_metric"]), float(calibration_config["snr_tolerance_db"]))
+    curve = [
+        {"k": float(row["params"]["k"]), "median_subject_snr_db": row["median_subject_snr_db"],
+         "mean_subject_snr_db": row["mean_subject_snr_db"], "median_spike_density": row["median_spike_density"],
+         "subjects_scored": row["subjects_scored"]}
+        for row in rows
+    ]
+    return float(best["params"]["k"]), curve
 
 
 def _representative_subjects(
@@ -304,16 +345,15 @@ def run() -> None:
     sampling_rates = {float(row["fs"]) for row in rows}
     if len(sampling_rates) != 1:
         raise ValueError(f"Expected one sampling rate, got {sorted(sampling_rates)}")
+    fs = sampling_rates.pop()
+    method = main_method(config)
     leak_cutoff_hz = config["decoder"]["leak_cutoff_hz"]
-    decoder_leak = leak_from_cutoff(leak_cutoff_hz, sampling_rates.pop())
-    best_k, curve = sweep_calibration_k(
-        calibration_by_subject,
-        k_candidates=calibration_config["k_candidates"],
-        settings=ThresholdSettings.from_config(calibration_config),
-        selection_metric=str(calibration_config["selection_metric"]),
-        snr_tolerance_db=float(calibration_config["snr_tolerance_db"]),
-        decoder_leak=decoder_leak,
-    )
+    decoder_leak = leak_from_cutoff(leak_cutoff_hz, fs)
+    print(f"\nMain encoder: {DISPLAY_NAMES[method]} ({method}); sweeping k on calibration windows only")
+    best_k, curve = _sweep_main_encoder(config, calibration_by_subject, decoder_leak, fs)
+    if best_k != main_k(config):
+        print(f"WARNING: selected k = {best_k:g} differs from configs/c1_encoding.yaml encoder.k = "
+              f"{main_k(config):g}; update encoder.k so the dashboard and handover agree.")
     output_dir = OUTPUT_ROOT / "c1" / str(
         calibration_config["output_subdirectory"]
     )
@@ -332,6 +372,7 @@ def run() -> None:
             config,
             best_k,
             unit,
+            method,
         )
         _write_profile(profile, profile_dir)
         profile_by_id[subject_id] = profile
@@ -347,11 +388,12 @@ def run() -> None:
     )
     profiles = list(profile_by_id.values())
     summary = {
+        "main_encoder": method,
         "selected_global_k": best_k,
         "selection_metric": calibration_config["selection_metric"],
         "snr_tolerance_db": float(calibration_config["snr_tolerance_db"]),
-        "decoder_leak_cutoff_hz": leak_cutoff_hz,
-        "decoder_leak": decoder_leak,
+        "decoder_leak_cutoff_hz": leak_cutoff_hz if method == "tbr" else None,
+        "decoder_leak": decoder_leak if method == "tbr" else 1.0,
         "selection_data": "calibration windows only",
         "include_mean": bool(calibration_config["include_mean"]),
         "unit": unit,
@@ -377,7 +419,7 @@ def run() -> None:
 
     print(
         f"\nSelected global k: {best_k:g} "
-        f"({calibration_config['selection_metric']}, decoder leak={decoder_leak:.4f})"
+        f"for {DISPLAY_NAMES[method]} ({calibration_config['selection_metric']})"
     )
     print("Calibration-only SNR-vs-k:")
     for point in curve:

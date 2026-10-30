@@ -423,3 +423,27 @@ unchanged. BSA is a comparison baseline in its own file, `bsa.py`, like `step_fo
   - boundaries match the manifest.
 - Updated `USAGE_FOR_C2.md` to load the whole recording and to explain the boundary.
   Added `tests/c1/test_handover.py` (5 tests).
+
+## 2026-10-27 — Adaptive Step-Forward becomes the main encoder
+
+- The encoder comparison (all 53 patients, unseen last 80%) selected Step-Forward over
+  TBR, AER and BSA. A follow-up test gave Step-Forward the same patient-adaptive threshold
+  rule as TBR, θ = mean(d) + k·std(d) of the calibration changes, and swept k on
+  calibration data only (rule `sparsest_within_snr_tolerance`, 0.5 dB): k = 2.0.
+- Result on the unseen 80% (medians): depression-feature ρ 0.986, frontal alpha
+  asymmetry ρ 0.976, |Δd| MDD vs HC 0.025, SNR 10.05 dB, density 0.22, θ spread across
+  patients 3.0×. TBR: 0.947, 0.888, 0.038, 1.92 dB. Fixed-threshold Step-Forward has a
+  similar feature ρ but worse FAA, |Δd| and a less even spike rate across patients
+  (CV 0.37 vs 0.20), so the adaptive thresholds still matter.
+- Novelty kept: the patient-adaptive calibration (first 20%, per electrode, std of
+  changes) is unchanged; only the spike rule that applies θ changed.
+- Added `main_encoder.py`: one place that reads `encoder.method` / `encoder.k` from
+  `configs/c1_encoding.yaml` and fits, builds, encodes and decodes for the main
+  encoder. Switching back to TBR is one word in the config.
+- `step_forward.py`: added `AdaptiveStepForwardEncoder` (from a profile, contract
+  `[B, T, 256]`). `calibration.py`: profiles store `encoder` (old files load as `tbr`).
+- Calibration, handover/export, fidelity report, demo, dashboard figures and the
+  Frontend C1 page now use the main encoder. Comparison adds `step_forward_changes`
+  (adaptive) and `step_forward_fixed`; paired tests are against the main encoder.
+- Re-ran calibration (53 profiles, step_forward, k = 2.0), export, demo, fidelity,
+  dashboard figures and the comparison. Added `tests/c1/test_main_encoder.py` (8 tests).

@@ -9,8 +9,10 @@ Every method is wrapped in the same four steps, so the comparison treats them al
 
 | Method       | Per-subject calibration           | Global parameter(s) swept       |
 |--------------|-----------------------------------|---------------------------------|
+| step_forward_changes | theta_c = mean(d) + k * std(d) (main encoder) | k            |
 | tbr          | theta_c = mean(d) + k * std(d)    | k                               |
 | aer          | none (one fixed theta)            | theta                           |
+| step_forward_fixed | none (one fixed theta for SF)  | theta                           |
 | step_forward | theta_c = k_sf * std(x)           | k_sf                            |
 | bsa          | scale_c = percentile(|x|)         | filter length, cutoff, threshold|
 
@@ -98,6 +100,10 @@ def build_methods(
         # SF events move a tracked baseline by +/-theta, so plain integration recovers it.
         return reconstruct(spikes, thresholds, initial, leak=1.0)
 
+    def sf_changes_fit(windows, params):
+        # The main encoder: TBR's patient-adaptive rule (mean + k * std of the changes).
+        return torch.from_numpy(fit_thresholds(windows, float(params["k"]), tbr_settings))
+
     def bsa_fit(windows, params):
         settings = BSASettings(
             filter_length=int(params["filter_length"]),
@@ -112,7 +118,9 @@ def build_methods(
     return {
         "tbr": EncoderMethod("tbr", tbr_fit, threshold_encode, leaky_decode, lambda p: 3.0),
         "aer": EncoderMethod("aer", aer_fit, threshold_encode, leaky_decode, lambda p: 3.0),
+        "step_forward_changes": EncoderMethod("step_forward_changes", sf_changes_fit, sf_encode, sf_decode, lambda p: 4.0),
         "step_forward": EncoderMethod("step_forward", sf_fit, sf_encode, sf_decode, lambda p: 4.0),
+        "step_forward_fixed": EncoderMethod("step_forward_fixed", aer_fit, sf_encode, sf_decode, lambda p: 4.0),
         "bsa": EncoderMethod(
             "bsa",
             bsa_fit,
@@ -160,6 +168,7 @@ def sweep_method(
             {
                 "params": params,
                 "median_subject_snr_db": float(np.median(finite)),
+                "mean_subject_snr_db": float(np.mean(finite)),
                 "median_spike_density": float(np.median(densities)),
                 "subjects_scored": len(finite),
             }

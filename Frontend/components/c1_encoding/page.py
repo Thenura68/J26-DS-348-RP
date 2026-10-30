@@ -49,7 +49,7 @@ def _adaptation(results) -> None:
         "Small gaps are 2-second windows removed because they contained artifacts (blinks, movement)."
     )
 
-    st.subheader("2 – 4 · Learn θ, compare every change with it, emit spikes")
+    st.subheader("2 – 4 · Learn θ, follow the signal with a baseline, emit spikes")
     show_image(results / "dashboard" / "adaptation_steps.png")
     st.markdown(
         f"- **Step 2.** Take the change between every two consecutive samples in the calibration part "
@@ -57,8 +57,9 @@ def _adaptation(results) -> None:
         f"**std(d) = {steps['std_change']:.3f}**; their average is almost exactly 0.\n"
         f"- The threshold is **θ = mean(d) + k × std(d) = {steps['theta']:.3f}**, with one global "
         f"sensitivity **k = {facts['k']:g}** for everyone.\n"
-        "- **Step 3.** Each new change is compared with θ: bigger than +θ (green) or smaller than −θ "
-        "(red) counts; anything in between (grey) is ignored.\n"
+        f"- **Step 3.** The encoder ({facts.get('encoder_name', 'Adaptive Step-Forward')}) keeps a baseline that "
+        "follows the signal in steps of θ. When the signal rises θ above the baseline, the baseline steps up "
+        "(UP spike); when it falls θ below, the baseline steps down (DOWN spike); otherwise nothing happens.\n"
         f"- **Step 4.** The result is a spike train: **UP** spikes for rises, **DOWN** spikes for falls "
         f"({steps['zoom_up_spikes']} UP and {steps['zoom_down_spikes']} DOWN in this one second)."
     )
@@ -143,7 +144,7 @@ def render() -> None:
         render_live_demo()
         st.divider()
         st.header("Saved example")
-        show_image(results / "encoding_demo" / "02010002_tbr_demo.png",
+        show_image(results / "encoding_demo" / "02010002_encoding_demo.png",
                    "Original vs decoded EEG and the UP/DOWN spike raster (scripts/c1_encode_demo.py)")
 
     with decoding:

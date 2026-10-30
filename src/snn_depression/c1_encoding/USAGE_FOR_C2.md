@@ -1,6 +1,6 @@
 # C1 → C2 usage note: getting spike trains from the encoder
 
-Status: 2026-10-23. **Provisional:** the window length (currently 2 s, so `T = 500`) is
+Status: 2026-10-27 (encoder switched to adaptive Step-Forward). **Provisional:** the window length (currently 2 s, so `T = 500`) is
 still an open team decision. If it changes, `T` changes and this note will be updated;
 nothing else in the interface changes.
 
@@ -19,16 +19,20 @@ One spike tensor per batch of EEG windows, as fixed by the shared contract
 | Values | `0.0` or `1.0` only |
 | dtype | `float32` |
 
-- **UP** channel `i` fires when electrode E(i+1) rose by more than its threshold since the
-  previous step; **DOWN** channel `128+i` fires when it fell by more than its threshold.
+- **UP** channel `i` fires when electrode E(i+1) rose more than its threshold above the
+  encoder's baseline (the baseline then steps up by the threshold); **DOWN** channel `128+i`
+  fires when it fell more than its threshold below the baseline.
   UP and DOWN never fire together on the same electrode and step.
-- Step 0 of every window is always silent (no previous sample to compare with).
+- Step 0 of every window is always silent (the baseline starts at the first sample).
 - Convert to snnTorch's time-first `[T, B, 256]` **inside** your module, not at the boundary.
-- Spike density is about 27% of slots (about 64 spikes/s per electrode).
+- About 11–12% of the 256 channel slots are 1 (about 55–60 spikes/s per electrode).
 
-The encoder is TBR with patient-adaptive thresholds. Encoder comparisons (AER,
-Step-Forward, BSA) are still running; **every method produces this same shape and
-channel order**, so your code does not change if the final choice changes.
+The encoder is **adaptive Step-Forward**: Step-Forward encoding with a threshold per patient
+and electrode, θ = mean(d) + k·std(d) of that patient's sample-to-sample changes in the first
+20% (k = 2.0). It was chosen after comparing TBR, fixed-threshold TBR (AER), Step-Forward
+(fixed and adaptive) and BSA on all 53 patients; it kept the depression features best.
+The previous TBR encoder produces **the same shape and channel order**, so your code does not
+change. The encoder used is stored in each profile and `.npz` (`encoder` field).
 
 ## 2. Data you need (local, git-ignored)
 
@@ -52,7 +56,7 @@ encodes the **whole recording** (first 20% + last 80%, in time order) with them.
 Run once, in this order (C1 owner, or yourself):
 
 ```bash
-python scripts/c1_calibrate.py      # thresholds per patient → outputs/c1/calibration/profiles/<id>.json (k = 1.0)
+python scripts/c1_calibrate.py      # thresholds per patient → outputs/c1/calibration/profiles/<id>.json (k = 2.0)
 python scripts/c1_export_spikes.py  # whole-recording spikes → outputs/c1/spikes/<id>.npz (≈84 MB for all 53)
 ```
 

@@ -37,8 +37,9 @@ from snn_depression.common.contracts import CLASS_NAMES, check_spike_train
 from snn_depression.common.paths import INTERIM_DIR, OUTPUT_ROOT
 from snn_depression.common.seed import set_seed
 from snn_depression.c1_encoding.calibration import ThresholdProfile, channel_region_map
-from snn_depression.c1_encoding.decoder import leak_from_cutoff, reconstruct
-from snn_depression.c1_encoding.encoder import AdaptiveThresholdEncoder, from_dual_binary
+from snn_depression.c1_encoding.encoder import from_dual_binary
+from snn_depression.c1_encoding.main_encoder import decode as decode_main
+from snn_depression.c1_encoding.main_encoder import make_encoder
 from snn_depression.c1_encoding.fidelity import (
     band_powers,
     feature_preservation,
@@ -149,15 +150,10 @@ def run() -> None:
         evaluation = np.load(source_dir / f"{subject_id}_evaluation.npy")
         eeg = torch.from_numpy(np.asarray(evaluation, dtype=np.float32))
 
-        encoder = AdaptiveThresholdEncoder.from_profile(profile)
+        encoder = make_encoder(profile)  # C1's main encoder (recorded in the profile)
         spikes = encoder.encode(eeg)
         check_spike_train(spikes, n_channels=2 * len(channel_names))
-        decoded = reconstruct(
-            spikes,
-            encoder.thresholds,
-            eeg[:, :, 0],
-            leak=leak_from_cutoff(leak_cutoff_hz, fs),
-        )
+        decoded = decode_main(spikes, encoder.thresholds.double(), eeg[:, :, 0].double(), profile.encoder, config, fs)
 
         integrity = signal_integrity(eeg, decoded)
         spectral = spectral_fidelity(
@@ -175,6 +171,7 @@ def run() -> None:
             "group": row["group"],
             "phq9": row.get("phq9"),
             "evaluation_windows": int(eeg.shape[0]),
+            "encoder": profile.encoder,
             "k": profile.k,
             "spike_density": spike_density(from_dual_binary(spikes)),
             **integrity,
@@ -236,7 +233,8 @@ def run() -> None:
     summary = {
         "data": "evaluation windows only; thresholds from calibration profiles",
         "subject_count": len(session_rows),
-        "decoder_leak_cutoff_hz": leak_cutoff_hz,
+        "encoder": sorted({s["encoder"] for s in session_rows}),
+        "decoder_leak_cutoff_hz": leak_cutoff_hz,  # used only when the encoder is TBR
         "median_session": {
             key: _finite_median([float(s[key]) for s in session_rows])
             for key in ("snr_db", "rmse", "correlation", "spike_density")
